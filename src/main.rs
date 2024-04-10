@@ -1,16 +1,14 @@
 use std::{env, process::exit, rc::Rc, time::Instant};
 
-use rredis::{redis::{before_sleep, daemonize, init_server, init_server_config, load_append_only_file, load_server_config, rdb_load, reset_server_save_params, RedisServer, REDIS_VERSION}, util::LogLevel};
+use rredis::{redis::{before_sleep, daemonize, init_server, load_append_only_file, rdb_load, RedisServer, REDIS_VERSION}, util::LogLevel};
 
 fn main() {
-    let mut server = RedisServer::new();
     let args: Vec<String> = env::args().collect();
-
-    init_server_config();
+    let mut server = Box::new(RedisServer::new());
 
     if args.len() == 2 {
-        reset_server_save_params();
-        load_server_config(&args[1]);
+        server.reset_server_save_params();
+        server.load_server_config(&args[1]);
     } else if args.len() > 2 {
         eprintln!("Usage: ./redis-server [/path/to/redis.conf]");
         exit(1);

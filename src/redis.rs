@@ -1,6 +1,7 @@
 use libc::off_t;
-
 use crate::{ae::{BeforeSleepProc, EventLoop}, util::{timestamp, LogLevel}};
+
+pub mod config;
 
 pub static REDIS_VERSION: &str = "1.3.7";
 static MAX_IDLE_TIME: i32 = 60 * 5;             // default client timeout
@@ -41,7 +42,7 @@ pub struct RedisServer {
     el: Box<EventLoop>,
     // Configuration
     verbosity: LogLevel,
-    glue_output_buf: i32,
+    glue_output_buf: bool,
     max_idle_time: i32,
     dbnum: i32,
     daemonize: bool,
@@ -50,19 +51,19 @@ pub struct RedisServer {
     last_fsync: u128,
     append_fd: i32,
     append_sel_db: i32,
-    pid_file: &'static str,
+    pid_file: String,
     save_param: Vec<SaveParam>,
-    log_file: &'static str,
-    bind_addr: &'static str,
-    db_filename: &'static str,
+    log_file: String,
+    bind_addr: String,
+    db_filename: String,
     append_filename: &'static str,
-    require_pass: &'static str,
+    require_pass: String,
     share_objects: bool,
     rdb_compression: bool,
     // Replication related
     is_slave: bool,
-    master_auth: &'static str,
-    master_host: &'static str,
+    master_auth: String,
+    master_host: String,
     master_port: u16,
     master: Option<Box<RedisClient>>,       // client that is master for this slave
     repl_state: ReplState,
@@ -73,7 +74,7 @@ pub struct RedisServer {
     vm_blocked_clients: u32,
     // Virtual memory configuration
     vm_enabled: bool,
-    vm_swap_file: &'static str,
+    vm_swap_file: String,
     vm_page_size: off_t,
     vm_pages: off_t,
     vm_max_memory: u128,
@@ -98,19 +99,19 @@ impl RedisServer {
             max_idle_time: MAX_IDLE_TIME,
             dbnum: DEFAULT_DBNUM,
             save_param,
-            log_file: "",                       // "" = log on standard output
-            bind_addr: "",
-            glue_output_buf: 1,
+            log_file: String::new(),                       // "" = log on standard output
+            bind_addr: String::new(),
+            glue_output_buf: true,
             daemonize: false,
             append_only: false,
             append_fsync: AppendFsync::Always,
             last_fsync: timestamp().as_nanos(),
             append_fd: -1,
             append_sel_db: -1,                  // Make sure the first time will not match
-            pid_file: "/var/run/redis.pid",
-            db_filename: "dump.rdb",
+            pid_file: "/var/run/redis.pid".to_string(),
+            db_filename: "dump.rdb".to_string(),
             append_filename: "appendonly.aof",
-            require_pass: "",
+            require_pass: String::new(),
             share_objects: false,
             rdb_compression: true,
             sharing_pool_size: 1024,
@@ -118,7 +119,7 @@ impl RedisServer {
             blpop_blocked_clients: 0,
             max_memory: 0,
             vm_enabled: false,
-            vm_swap_file: "/tmp/redis-%p.vm",
+            vm_swap_file: "/tmp/redis-%p.vm".to_string(),
             vm_page_size: 256,                  // 256 bytes per page
             vm_pages: 1024 * 1024 * 100,        // 104 millions of pages
             vm_max_memory: 1024 * 1024 * 1024,  // 1 GB of RAM
@@ -129,13 +130,22 @@ impl RedisServer {
 
             // Replication related
             is_slave: false,
-            master_auth: "",
-            master_host: "",
+            master_auth: String::new(),
+            master_host: String::new(),
             master_port: 6379,
             master: None,
             repl_state: ReplState::None,
         }
     }
+
+    pub fn reset_server_save_params(&mut self) {
+        self.save_param.clear();
+    }
+
+    fn append_server_save_params(&mut self, seconds: u128, changes: i32) {
+        self.save_param.push(SaveParam { seconds, changes });
+    }
+
     pub fn daemonize(&self) -> bool {
         self.daemonize
     }
@@ -149,7 +159,7 @@ impl RedisServer {
     }
 
     pub fn db_filename(&self) -> &str {
-        self.db_filename
+        &self.db_filename
     }
 
     pub fn port(&self) -> u16 {
@@ -163,18 +173,6 @@ impl RedisServer {
     pub fn main(&mut self) {
         self.el.main();
     }
-}
-
-pub fn init_server_config() {
-
-}
-
-pub fn reset_server_save_params() {
-
-}
-
-pub fn load_server_config(filename: &str) {
-
 }
 
 pub fn daemonize() {
@@ -195,4 +193,27 @@ pub fn rdb_load(filename: &str) -> Result<(), String> {
 
 pub fn before_sleep(el: &mut EventLoop) {
 
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{BufRead, Cursor};
+
+    use super::*;
+
+    #[test]
+    fn char_test() {
+        assert!('\t'.is_whitespace());
+        assert!('\r'.is_whitespace());
+        assert!('\n'.is_whitespace());
+        assert!(' '.is_whitespace());
+    }
+
+    #[test]
+    fn cfg_file_line_test() {
+        let text = "\n\n\n\n".to_string();
+        let cursor = Cursor::new(text);
+        let lines: Vec<String> = cursor.lines().map(|l| l.unwrap()).collect();
+        assert_eq!(lines.len(), 4);
+    }
 }
