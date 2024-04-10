@@ -2,9 +2,11 @@
 //! for the Jim's event-loop (Jim is a Tcl interpreter) but later translated
 //! it in form of a library for easy reuse.
 
-use std::{any::Any, cell::RefCell, mem::zeroed, ops::{BitAnd, BitOr, Deref}, ptr::{null, null_mut}, rc::Rc, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use std::{any::Any, cell::RefCell, mem::zeroed, ops::{BitAnd, BitOr, Deref}, ptr::{null, null_mut}, rc::Rc};
 
 use libc::{__error, close, fd_set, kevent, kqueue, select, strerror, timespec, timeval, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_DELETE, FD_ISSET, FD_SET, FD_ZERO};
+
+use crate::util::timestamp;
 
 const SET_SIZE: usize = 1024 * 10;    // Max number of fd supported
 
@@ -412,8 +414,7 @@ impl EventLoop {
     }
 
     fn get_time_ms() -> u128 {
-        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        timestamp.as_millis()
+        timestamp().as_millis()
     }
 
     fn add_ms_to_now(ms: u128) -> u128 {
