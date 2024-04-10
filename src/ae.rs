@@ -2,9 +2,9 @@
 //! for the Jim's event-loop (Jim is a Tcl interpreter) but later translated
 //! it in form of a library for easy reuse.
 
-use std::{any::Any, cell::RefCell, mem::zeroed, ops::{BitAnd, BitOr, Deref, DerefMut}, ptr::{null, null_mut}, rc::Rc, time::{SystemTime, UNIX_EPOCH}};
+use std::{any::Any, cell::RefCell, mem::zeroed, ops::{BitAnd, BitOr, Deref}, ptr::{null, null_mut}, rc::Rc, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
 
-use libc::{__error, close, fd_set, kevent, kqueue, select, strerror, timespec, timeval, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_DELETE, FD_ISSET, FD_SET, FD_SETSIZE, FD_ZERO};
+use libc::{__error, close, fd_set, kevent, kqueue, select, strerror, timespec, timeval, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_DELETE, FD_ISSET, FD_SET, FD_ZERO};
 
 const SET_SIZE: usize = 1024 * 10;    // Max number of fd supported
 
@@ -13,7 +13,7 @@ static NO_MORE: i32 = -1;
 type FileProc = Rc<dyn Fn(&mut EventLoop, i32, Option<Rc<dyn Any>>, Mask) -> ()>;
 type TimeProc = Rc<dyn Fn(&mut EventLoop, u128, Option<Rc<dyn Any>>) -> i32>;
 type EventFinalizerProc = Rc<dyn Fn(&mut EventLoop, Option<Rc<dyn Any>>) -> ()>;
-type BeforeSleepProc = Rc<dyn Fn(&mut EventLoop) -> ()>;
+pub type BeforeSleepProc = Rc<dyn Fn(&mut EventLoop) -> ()>;
 
 fn TODO(el: &mut EventLoop, fd: i32, client_data: Option<Rc<dyn Any>>, mask: Mask) {
     todo!()

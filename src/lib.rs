@@ -8,3 +8,4 @@ pub mod zmalloc;
 pub mod lzf;
 pub mod pqsort;
 pub mod zipmap;
+pub mod util;
