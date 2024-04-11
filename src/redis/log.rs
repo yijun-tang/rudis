@@ -1,4 +1,4 @@
-use std::{fmt::Display, fs::OpenOptions, io::{self, BufWriter, Write}, process::id};
+use std::{fmt::Display, fs::OpenOptions, io::{self, BufWriter, Write}, process::{abort, id}, thread::sleep, time::Duration};
 use crate::util::timestamp;
 
 use super::RedisServer;
@@ -73,6 +73,17 @@ impl RedisServer {
             Ok(_) => {},
             Err(e) => { eprintln!("Can't write log: {}", e); },
         }
+    }
+
+    /// Redis generally does not try to recover from out of memory conditions
+    /// when allocating objects or strings, it is not clear if it will be possible
+    /// to report this condition to the client since the networking layer itself
+    /// is based on heap allocation for send buffers, so we simply abort.
+    /// At least the code will be simpler to read...
+    pub fn oom(&self, msg: &str) {
+        self.log(LogLevel::Warning, &format!("{}: Out of memory\n", msg));
+        sleep(Duration::from_secs(1));
+        abort();
     }
 }
 

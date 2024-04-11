@@ -1,11 +1,13 @@
-use std::ptr::{null, null_mut};
+use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, hash::Hash, io::Write, net::TcpListener, process::exit, ptr::null_mut, rc::Rc};
 
-use libc::{close, dup2, exit, fclose, fopen, fork, fprintf, getpid, off_t, open, setsid, FILE, O_RDWR, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
-use crate::{ae::{BeforeSleepProc, EventLoop}, util::timestamp};
-use self::log::LogLevel;
+use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, off_t, open, pid_t, setsid, signal, time_t, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
+use crate::{ae::{BeforeSleepProc, EventLoop, Mask}, util::timestamp};
+use self::{log::LogLevel, signal::setup_sig_segv_action};
 
 pub mod config;
 pub mod log;
+pub mod signal;
+pub mod vm;
 
 pub static REDIS_VERSION: &str = "1.3.7";
 static MAX_IDLE_TIME: i32 = 60 * 5;             // default client timeout
@@ -34,6 +36,14 @@ enum ReplState {
     Connected,  // Connected to master
 }
 
+struct RedisDB {
+    dict: HashMap<String, String>,              // The keyspace for this DB
+    expires: HashMap<String, String>,           // Timeout of keys with a timeout set
+    blocking_keys: HashMap<String, String>,     // Keys with clients waiting for data (BLPOP)
+    io_keys: Option<HashMap<String, String>>,   // Keys with clients waiting for VM I/O
+    id: i32,
+}
+
 /// With multiplexing we need to take per-clinet state.
 /// Clients are taken in a liked list.
 struct RedisClient {
@@ -42,8 +52,23 @@ struct RedisClient {
 
 pub struct RedisServer {
     port: u16,
+    fd: i32,
+    tcp_listener: Option<Box<TcpListener>>,
+    dbs: Vec<RedisDB>,
+    sharing_pool: HashMap<String, String>,      // Pool used for object sharing
     sharing_pool_size: u32,
+    dirty: u128,                                // changes to DB from the last save
+    clients: LinkedList<RedisClient>,
+    slaves: LinkedList<RedisClient>,
+    monitors: LinkedList<RedisClient>,
     el: Box<EventLoop>,
+    cron_loops: i32,                            // number of times the cron function run
+    obj_free_list: LinkedList<Box<dyn Any>>,    // A list of freed objects to avoid malloc()
+    last_save: u64,                             // Unix time of last save succeeded (in seconds)
+    // Fields used only for stats
+    stat_starttime: u64,                        // server start time (in seconds)
+    stat_numcommands: u128,                     // number of processed commands
+    stat_numconnections: u128,                  // number of connections received
     // Configuration
     verbosity: LogLevel,
     glue_output_buf: bool,
@@ -52,10 +77,14 @@ pub struct RedisServer {
     daemonize: bool,
     append_only: bool,
     append_fsync: AppendFsync,
-    last_fsync: u128,
+    append_writer: Option<Box<dyn Write>>,
+    last_fsync: u64,
     append_fd: i32,
     append_sel_db: i32,
     pid_file: String,
+    bg_save_child_pid: pid_t,
+    bg_rewrite_child_pid: pid_t,
+    bg_rewrite_buf: String,                     // buffer taken by parent during oppend only rewrite
     save_param: Vec<SaveParam>,
     log_file: String,
     bind_addr: String,
@@ -82,15 +111,29 @@ pub struct RedisServer {
     vm_page_size: off_t,
     vm_pages: off_t,
     vm_max_memory: u128,
+    
+    
     // Hashes config
     hash_max_zipmap_entries: usize,
     hash_max_zipmap_value: usize,
 
+    // Virtual memory state
+    unix_time: u64,                                 // Unix time sampled every second
+
     vm_max_threads: i32,                            // Max number of I/O threads running at the same time
+
+    devnull: Option<Box<dyn Write>>,
 }
 
 impl RedisServer {
     pub fn new() -> RedisServer {
+        let el = match EventLoop::create() {
+            Ok(el) => { el },
+            Err(e) => {
+                eprintln!("Can't create event loop: {}", e);
+                exit(1);
+            },
+        };
         let save_param = vec![
             SaveParam { seconds: 60 * 60, changes: 1 },             // save after 1 hour and 1 change
             SaveParam { seconds: 300, changes: 100 },               // save after 5 minutes and 100 changes
@@ -98,7 +141,21 @@ impl RedisServer {
         ];
         RedisServer { 
             port: SERVER_PORT, 
-            el: EventLoop::create().unwrap(),   // TODO
+            fd: -1,
+            tcp_listener: None,
+            dbs: Vec::with_capacity(DEFAULT_DBNUM as usize),
+            sharing_pool: HashMap::new(),
+            dirty: 0,
+            clients: LinkedList::new(),
+            slaves: LinkedList::new(),
+            monitors: LinkedList::new(),
+            el,
+            cron_loops: 0,
+            obj_free_list: LinkedList::new(),
+            last_save: timestamp().as_secs(),
+            stat_starttime: timestamp().as_secs(),
+            stat_numcommands: 0,
+            stat_numconnections: 0,
             verbosity: LogLevel::Verbose,
             max_idle_time: MAX_IDLE_TIME,
             dbnum: DEFAULT_DBNUM,
@@ -109,10 +166,14 @@ impl RedisServer {
             daemonize: false,
             append_only: false,
             append_fsync: AppendFsync::Always,
-            last_fsync: timestamp().as_nanos(),
+            append_writer: None,
+            last_fsync: timestamp().as_secs(),
             append_fd: -1,
             append_sel_db: -1,                  // Make sure the first time will not match
             pid_file: "/var/run/redis.pid".to_string(),
+            bg_save_child_pid: -1,
+            bg_rewrite_child_pid: -1,
+            bg_rewrite_buf: String::new(),
             db_filename: "dump.rdb".to_string(),
             append_filename: "appendonly.aof",
             require_pass: String::new(),
@@ -131,6 +192,7 @@ impl RedisServer {
             vm_blocked_clients: 0,
             hash_max_zipmap_entries: HASH_MAX_ZIPMAP_ENTRIES,
             hash_max_zipmap_value: HASH_MAX_ZIPMAP_VALUE,
+            unix_time: timestamp().as_secs(),
 
             // Replication related
             is_slave: false,
@@ -139,6 +201,8 @@ impl RedisServer {
             master_port: 6379,
             master: None,
             repl_state: ReplState::None,
+            devnull: None,
+            
         }
     }
 
@@ -171,6 +235,64 @@ impl RedisServer {
                 fclose(fp);
             }
         }
+    }
+
+    pub fn init_server(&mut self) {
+        unsafe {
+            // ignore handler
+            signal(SIGHUP, SIG_IGN);
+            signal(SIGPIPE, SIG_IGN);
+            setup_sig_segv_action();
+        }
+
+        match OpenOptions::new().write(true).open("/dev/null") {
+            Ok(f) => { self.devnull = Some(Box::new(f)); },
+            Err(e) => {
+                self.log(LogLevel::Warning, &format!("Can't open /dev/null: {}", e));
+                exit(1);
+            },
+        }
+
+        self.create_shared_objects();
+
+        // TODO: fd or TcpListener
+        match TcpListener::bind((&self.bind_addr[..], self.port)) {
+            Ok(l) => { self.tcp_listener = Some(Box::new(l)); },
+            Err(e) => {
+                self.log(LogLevel::Warning, &format!("Opening TCP port: {}", e));
+                exit(1);
+            },
+        }
+
+        for i in 0..self.dbnum {
+            let mut io_keys: Option<HashMap<String, String>> = None;
+            if self.vm_enabled {
+                io_keys = Some(HashMap::new());
+            }
+            self.dbs.push(RedisDB { dict: HashMap::new(), expires: HashMap::new(), blocking_keys: HashMap::new(), io_keys, id: i });
+        }
+
+        self.el.create_time_event(1, Rc::new(server_cron), None, None);
+        match self.el.create_file_event(self.fd, Mask::Readable, Rc::new(accept_handler), None) {
+            Ok(_) => {},
+            Err(e) => { self.oom(&e); },    // TODO: is it appropriate to call oom?
+        }
+
+        if self.append_only {
+            match OpenOptions::new().write(true).append(true).create(true).open(self.append_filename) {
+                Ok(f) => { self.append_writer = Some(Box::new(f)); },
+                Err(e) => {
+                    self.log(LogLevel::Warning, &format!("Can't open the append-only file: {}", e));
+                    exit(1);
+                },
+            }
+        }
+
+        if self.vm_enabled { self.init_vm(); }
+    }
+
+    fn create_shared_objects(&mut self) {
+        todo!()
     }
 
     fn append_server_save_params(&mut self, seconds: u128, changes: i32) {
@@ -206,10 +328,6 @@ impl RedisServer {
     }
 }
 
-pub fn init_server() {
-
-}
-
 pub fn load_append_only_file(filename: &str) -> Result<(), String> {
     todo!()
 }
@@ -220,6 +338,14 @@ pub fn rdb_load(filename: &str) -> Result<(), String> {
 
 pub fn before_sleep(el: &mut EventLoop) {
 
+}
+
+fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Rc<dyn Any>>) -> i32 {
+    todo!()
+}
+
+fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<Rc<dyn Any>>, mask: Mask) {
+    todo!()
 }
 
 #[cfg(test)]

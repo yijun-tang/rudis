@@ -1,5 +1,5 @@
 use std::{env, process::exit, rc::Rc, time::Instant};
-use rredis::redis::{before_sleep, init_server, load_append_only_file, log::LogLevel, rdb_load, RedisServer, REDIS_VERSION};
+use rredis::redis::{before_sleep, load_append_only_file, log::LogLevel, rdb_load, RedisServer, REDIS_VERSION};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -18,7 +18,7 @@ fn main() {
         server.daemonize();
     }
 
-    init_server();
+    server.init_server();
     server.log(LogLevel::Notice, &format!("Server started, Redis version {}", REDIS_VERSION));
 
     // Conditional Compilation
