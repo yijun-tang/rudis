@@ -1,7 +1,9 @@
 use libc::off_t;
-use crate::{ae::{BeforeSleepProc, EventLoop}, util::{timestamp, LogLevel}};
+use crate::{ae::{BeforeSleepProc, EventLoop}, util::timestamp};
+use self::log::LogLevel;
 
 pub mod config;
+pub mod log;
 
 pub static REDIS_VERSION: &str = "1.3.7";
 static MAX_IDLE_TIME: i32 = 60 * 5;             // default client timeout
