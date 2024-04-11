@@ -1,4 +1,6 @@
-use libc::off_t;
+use std::ptr::{null, null_mut};
+
+use libc::{close, dup2, exit, fclose, fopen, fork, fprintf, getpid, off_t, open, setsid, FILE, O_RDWR, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use crate::{ae::{BeforeSleepProc, EventLoop}, util::timestamp};
 use self::log::LogLevel;
 
@@ -144,11 +146,38 @@ impl RedisServer {
         self.save_param.clear();
     }
 
+    pub fn daemonize(&self) {
+        let mut fd = -1;
+        let mut fp: *mut FILE = null_mut();
+        unsafe {
+            if fork() != 0 { exit(0); }     // parent exits
+            setsid();                               // create a new session
+    
+            // Every output goes to /dev/null. If Redis is daemonized but
+            // the 'logfile' is set to 'stdout' in the configuration file
+            // it will not log at all.
+            fd = open("/dev/null".as_ptr() as *const i8, O_RDWR, 0);
+            if fd != -1 {
+                dup2(fd, STDIN_FILENO);
+                dup2(fd, STDOUT_FILENO);
+                dup2(fd, STDERR_FILENO);
+                if fd > STDERR_FILENO { close(fd); }
+            }
+    
+            // Try to write the pid file
+            fp = fopen(self.pid_file.as_ptr() as *const i8, "w".as_ptr() as *const i8);
+            if !fp.is_null() {
+                fprintf(fp, "%d\n".as_ptr() as *const i8, getpid());
+                fclose(fp);
+            }
+        }
+    }
+
     fn append_server_save_params(&mut self, seconds: u128, changes: i32) {
         self.save_param.push(SaveParam { seconds, changes });
     }
 
-    pub fn daemonize(&self) -> bool {
+    pub fn is_daemonize(&self) -> bool {
         self.daemonize
     }
 
@@ -175,10 +204,6 @@ impl RedisServer {
     pub fn main(&mut self) {
         self.el.main();
     }
-}
-
-pub fn daemonize() {
-
 }
 
 pub fn init_server() {

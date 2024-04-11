@@ -1,5 +1,5 @@
 use std::{env, process::exit, rc::Rc, time::Instant};
-use rredis::redis::{before_sleep, daemonize, init_server, load_append_only_file, log::LogLevel, rdb_load, RedisServer, REDIS_VERSION};
+use rredis::redis::{before_sleep, init_server, load_append_only_file, log::LogLevel, rdb_load, RedisServer, REDIS_VERSION};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -14,8 +14,8 @@ fn main() {
     } else {
         server.log(LogLevel::Warning, "Warning: no config file specified, using the default config. In order to specify a config file use 'redis-server /path/to/redis.conf'");
     }
-    if server.daemonize() {
-        daemonize();
+    if server.is_daemonize() {
+        server.daemonize();
     }
 
     init_server();
