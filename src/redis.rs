@@ -1,4 +1,4 @@
-use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, hash::Hash, io::Write, net::TcpListener, process::exit, ptr::null_mut, rc::Rc};
+use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, hash::Hash, io::{BufRead, BufReader, Read, Write}, net::TcpListener, process::exit, ptr::null_mut, rc::Rc};
 
 use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, off_t, open, pid_t, setsid, signal, time_t, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use crate::{ae::{BeforeSleepProc, EventLoop, Mask}, util::timestamp};
@@ -325,6 +325,41 @@ impl RedisServer {
 
     pub fn main(&mut self) {
         self.el.main();
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn linux_overcommit_memory_warning(&self) {
+        if self.linux_overcommit_memory_value() == 0 {
+            self.log(LogLevel::Warning, "WARNING overcommit_memory is set to 0! Background save may fail under low condition memory. To fix this issue add 'vm.overcommit_memory = 1' to /etc/sysctl.conf and then reboot or run the command 'sysctl vm.overcommit_memory=1' for this to take effect.");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_overcommit_memory_value(&self) -> i32 {
+        let mut reader: Option<Box<dyn Read>> = None;
+        match OpenOptions::new().read(true).open("/proc/sys/vm/overcommit_memory") {
+            Ok(f) => { reader = Some(Box::new(f)); },
+            Err(e) => {
+                self.log(LogLevel::Warning, &format!("Can't open '/proc/sys/vm/overcommit_memory' file: {}", e));
+                return -1;
+            },
+        }
+        let mut buf = String::new();
+        match BufReader::new(reader.unwrap()).read_line(&mut buf) {
+            Ok(_) => {
+                match buf.parse() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.log(LogLevel::Warning, &format!("Parsing '{}' as i32 failed: {}", buf, e));
+                        -1
+                    },
+                }
+            },
+            Err(e) => {
+                self.log(LogLevel::Warning, &format!("Reading '/proc/sys/vm/overcommit_memory' file failed: {}", e));
+                -1
+            },
+        }
     }
 }
 

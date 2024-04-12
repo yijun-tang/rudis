@@ -21,10 +21,8 @@ fn main() {
     server.init_server();
     server.log(LogLevel::Notice, &format!("Server started, Redis version {}", REDIS_VERSION));
 
-    // Conditional Compilation
-    // #ifdef __linux__
-    // linuxOvercommitMemoryWarning();
-    // #endif
+    #[cfg(target_os = "linux")]
+    server.linux_overcommit_memory_warning();
 
     let start = Instant::now();
     if server.append_only() {
