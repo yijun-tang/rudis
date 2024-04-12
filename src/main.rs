@@ -1,5 +1,5 @@
 use std::{env, process::exit, rc::Rc, time::Instant};
-use rredis::redis::{before_sleep, load_append_only_file, log::LogLevel, rdb_load, RedisServer, REDIS_VERSION};
+use rredis::redis::{before_sleep, log::LogLevel, RedisServer, REDIS_VERSION};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -26,11 +26,11 @@ fn main() {
 
     let start = Instant::now();
     if server.append_only() {
-        if let Ok(_) = load_append_only_file(server.append_filename()) {
+        if let Ok(_) = server.load_append_only_file() {
             server.log(LogLevel::Notice, &format!("DB loaded from append only file: {} seconds", start.elapsed().as_secs()));
         }
     } else {
-        if let Ok(_) = rdb_load(server.db_filename()) {
+        if let Ok(_) = server.rdb_load() {
             server.log(LogLevel::Notice, &format!("DB loaded from disk: {} seconds", start.elapsed().as_secs()));
         }
     }

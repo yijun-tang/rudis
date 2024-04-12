@@ -1,13 +1,16 @@
-use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, hash::Hash, io::{BufRead, BufReader, Read, Write}, net::TcpListener, process::exit, ptr::null_mut, rc::Rc};
+use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, hash::Hash, io::{BufRead, BufReader, Read, Write}, net::TcpListener, process::exit, ptr::null_mut, rc::Rc, sync::Arc};
 
 use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, off_t, open, pid_t, setsid, signal, time_t, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use crate::{ae::{BeforeSleepProc, EventLoop, Mask}, util::timestamp};
-use self::{log::LogLevel, signal::setup_sig_segv_action};
+use self::{client::RedisClient, log::LogLevel, signal::setup_sig_segv_action};
 
 pub mod config;
 pub mod log;
 pub mod signal;
 pub mod vm;
+pub mod aof;
+pub mod client;
+pub mod cmd;
 
 pub static REDIS_VERSION: &str = "1.3.7";
 static MAX_IDLE_TIME: i32 = 60 * 5;             // default client timeout
@@ -29,14 +32,22 @@ enum AppendFsync {
     EverySec,
 }
 
-/// Slave replication state - slave side
 enum ReplState {
+    // Slave replication state - slave side
     None,       // No active replication
     Connect,    // Must connect to master
     Connected,  // Connected to master
+    // Slave replication state - from the point of view of master
+    // Note that in SEND_BULK and ONLINE state the slave receives new updates
+    // in its output queue. In the WAIT_BGSAVE state instead the server is waiting
+    // to start the next background saving in order to send updates to it.
+    WaitBgSaveStart,        // master waits bgsave to start feeding it
+    WaitBgSaveEnd,          // master waits bgsave to start bulk DB transmission
+    SendBulk,               // master is sending the bulk DB
+    Online,                 // bulk DB already transmitted, receive updates
 }
 
-struct RedisDB {
+pub struct RedisDB {
     dict: HashMap<String, String>,              // The keyspace for this DB
     expires: HashMap<String, String>,           // Timeout of keys with a timeout set
     blocking_keys: HashMap<String, String>,     // Keys with clients waiting for data (BLPOP)
@@ -44,17 +55,11 @@ struct RedisDB {
     id: i32,
 }
 
-/// With multiplexing we need to take per-clinet state.
-/// Clients are taken in a liked list.
-struct RedisClient {
-
-}
-
 pub struct RedisServer {
     port: u16,
     fd: i32,
     tcp_listener: Option<Box<TcpListener>>,
-    dbs: Vec<RedisDB>,
+    dbs: Vec<Arc<RedisDB>>,
     sharing_pool: HashMap<String, String>,      // Pool used for object sharing
     sharing_pool_size: u32,
     dirty: u128,                                // changes to DB from the last save
@@ -269,7 +274,7 @@ impl RedisServer {
             if self.vm_enabled {
                 io_keys = Some(HashMap::new());
             }
-            self.dbs.push(RedisDB { dict: HashMap::new(), expires: HashMap::new(), blocking_keys: HashMap::new(), io_keys, id: i });
+            self.dbs.push(Arc::new(RedisDB { dict: HashMap::new(), expires: HashMap::new(), blocking_keys: HashMap::new(), io_keys, id: i }));
         }
 
         self.el.create_time_event(1, Rc::new(server_cron), None, None);
@@ -289,6 +294,10 @@ impl RedisServer {
         }
 
         if self.vm_enabled { self.init_vm(); }
+    }
+
+    pub fn rdb_load(&self) -> Result<(), String> {
+        todo!()
     }
 
     fn create_shared_objects(&mut self) {
@@ -361,14 +370,6 @@ impl RedisServer {
             },
         }
     }
-}
-
-pub fn load_append_only_file(filename: &str) -> Result<(), String> {
-    todo!()
-}
-
-pub fn rdb_load(filename: &str) -> Result<(), String> {
-    todo!()
 }
 
 pub fn before_sleep(el: &mut EventLoop) {
