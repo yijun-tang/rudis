@@ -3,10 +3,8 @@
 //! it in form of a library for easy reuse.
 
 use std::{any::Any, cell::RefCell, mem::zeroed, ops::{BitAnd, BitOr, Deref}, ptr::{null, null_mut}, rc::Rc};
-
 use libc::{__error, close, fd_set, kevent, kqueue, select, strerror, timespec, timeval, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_DELETE, FD_ISSET, FD_SET, FD_ZERO};
-
-use crate::util::timestamp;
+use crate::util::{add_ms_to_now, get_time_ms};
 
 const SET_SIZE: usize = 1024 * 10;    // Max number of fd supported
 
@@ -222,7 +220,7 @@ impl EventLoop {
         self.time_event_next_id += 1;
         let te = Rc::new(RefCell::new(TimeEvent {
             id,
-            when_ms: Self::add_ms_to_now(milliseconds),
+            when_ms: add_ms_to_now(milliseconds),
             time_proc: proc,
             finalizer_proc,
             client_data,
@@ -293,7 +291,7 @@ impl EventLoop {
             if let Some(shrtest) = shortest {
                 // Calculate the time missing for the nearest
                 // timer to fire.
-                let now_ms = Self::get_time_ms();
+                let now_ms = get_time_ms();
                 if shrtest.deref().borrow().when_ms < now_ms {
                     time_val_us = Some(0);
                 } else {
@@ -413,14 +411,6 @@ impl EventLoop {
         Ok(Box::new(ApiState { kqfd, events: [kevent { ident: 0, filter: 0, flags: 0, fflags: 0, data: 0, udata: null_mut() }; SET_SIZE] }))
     }
 
-    fn get_time_ms() -> u128 {
-        timestamp().as_millis()
-    }
-
-    fn add_ms_to_now(ms: u128) -> u128 {
-        Self::get_time_ms() + ms
-    }
-
     /// Search the first timer to fire.
     /// This operation is useful to know how many time the select can be
     /// put in sleep without to delay any event.
@@ -461,7 +451,7 @@ impl EventLoop {
                 continue;
             }
 
-            if e.deref().borrow().when_ms <= Self::get_time_ms() {
+            if e.deref().borrow().when_ms <= get_time_ms() {
                 let id = e.deref().borrow().id;
                 let client_data = e.deref().borrow().client_data.clone();
                 let f = e.deref().borrow().time_proc.clone();
@@ -481,7 +471,7 @@ impl EventLoop {
                 * deletion (putting references to the nodes to delete into
                 * another linked list). */
                 if ret_val != NO_MORE {
-                    e.deref().borrow_mut().when_ms = Self::add_ms_to_now(ret_val as u128);
+                    e.deref().borrow_mut().when_ms = add_ms_to_now(ret_val as u128);
                 } else {
                     match self.delete_time_event(id) {
                         Ok(_) => {},

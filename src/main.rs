@@ -24,7 +24,7 @@ fn main() {
     #[cfg(target_os = "linux")]
     server.linux_overcommit_memory_warning();
 
-    let start = Instant::now();
+    /* let start = Instant::now();
     if server.append_only() {
         if let Ok(_) = server.load_append_only_file() {
             server.log(LogLevel::Notice, &format!("DB loaded from append only file: {} seconds", start.elapsed().as_secs()));
@@ -33,7 +33,7 @@ fn main() {
         if let Ok(_) = server.rdb_load() {
             server.log(LogLevel::Notice, &format!("DB loaded from disk: {} seconds", start.elapsed().as_secs()));
         }
-    }
+    } */
 
     server.log(LogLevel::Notice, &format!("The server is now ready to accept connections on port {}", server.port()));
     server.set_before_sleep_proc(Some(Rc::new(before_sleep)));

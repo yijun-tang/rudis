@@ -1,6 +1,5 @@
-use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, hash::Hash, io::{BufRead, BufReader, Read, Write}, net::TcpListener, process::exit, ptr::null_mut, rc::Rc, sync::Arc};
-
-use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, off_t, open, pid_t, setsid, signal, time_t, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
+use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, io::Write, net::TcpListener, process::exit, ptr::null_mut, rc::Rc, sync::Arc};
+use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, off_t, open, pid_t, setsid, signal, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use crate::{ae::{BeforeSleepProc, EventLoop, Mask}, util::timestamp};
 use self::{client::RedisClient, log::LogLevel, signal::setup_sig_segv_action};
 
@@ -9,6 +8,7 @@ pub mod log;
 pub mod signal;
 pub mod vm;
 pub mod aof;
+pub mod rdb;
 pub mod client;
 pub mod cmd;
 pub mod obj;
@@ -91,7 +91,7 @@ pub struct RedisServer {
     bg_save_child_pid: pid_t,
     bg_rewrite_child_pid: pid_t,
     bg_rewrite_buf: String,                     // buffer taken by parent during oppend only rewrite
-    save_param: Vec<SaveParam>,
+    save_params: Vec<SaveParam>,
     log_file: String,
     bind_addr: String,
     db_filename: String,
@@ -140,7 +140,7 @@ impl RedisServer {
                 exit(1);
             },
         };
-        let save_param = vec![
+        let save_params = vec![
             SaveParam { seconds: 60 * 60, changes: 1 },             // save after 1 hour and 1 change
             SaveParam { seconds: 300, changes: 100 },               // save after 5 minutes and 100 changes
             SaveParam { seconds: 60, changes: 10000 },              // save after 1 minute and 10000 changes
@@ -165,7 +165,7 @@ impl RedisServer {
             verbosity: LogLevel::Verbose,
             max_idle_time: MAX_IDLE_TIME,
             dbnum: DEFAULT_DBNUM,
-            save_param,
+            save_params,
             log_file: String::new(),                       // "" = log on standard output
             bind_addr: String::new(),
             glue_output_buf: true,
@@ -213,7 +213,7 @@ impl RedisServer {
     }
 
     pub fn reset_server_save_params(&mut self) {
-        self.save_param.clear();
+        self.save_params.clear();
     }
 
     pub fn daemonize(&self) {
@@ -259,8 +259,6 @@ impl RedisServer {
             },
         }
 
-        self.create_shared_objects();
-
         // TODO: fd or TcpListener
         match TcpListener::bind((&self.bind_addr[..], self.port)) {
             Ok(l) => { self.tcp_listener = Some(Box::new(l)); },
@@ -297,16 +295,8 @@ impl RedisServer {
         if self.vm_enabled { self.init_vm(); }
     }
 
-    pub fn rdb_load(&self) -> Result<(), String> {
-        todo!()
-    }
-
-    fn create_shared_objects(&mut self) {
-        todo!()
-    }
-
     fn append_server_save_params(&mut self, seconds: u128, changes: i32) {
-        self.save_param.push(SaveParam { seconds, changes });
+        self.save_params.push(SaveParam { seconds, changes });
     }
 
     pub fn is_daemonize(&self) -> bool {
@@ -378,6 +368,10 @@ pub fn before_sleep(el: &mut EventLoop) {
 }
 
 fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Rc<dyn Any>>) -> i32 {
+    // We take a cached value of the unix time in the global state because
+    // with virtual memory and aging there is to store the current time
+    // in objects at every object access, and accuracy is not needed.
+    // To access a global var is faster than calling time(NULL)
     todo!()
 }
 
