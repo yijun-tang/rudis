@@ -1,8 +1,6 @@
 use std::{fs::OpenOptions, io::{BufRead, BufReader, Read}, process::exit};
-
-use crate::redis::{log::LogLevel, RedisClient};
-
-use super::RedisServer;
+use crate::{redis::{log::LogLevel, RedisClient}, zmalloc::used_memory};
+use super::{cmd::lookup_command, obj::{try_object_encoding, try_object_sharing}, RedisServer};
 
 impl RedisServer {
     /// Replay the append log file. On error REDIS_OK is returned. On non fatal
@@ -41,8 +39,9 @@ impl RedisServer {
             exit(1);
         };
 
+        let mut loaded_keys = 0u128;
         let mut iter = BufReader::new(reader.unwrap()).lines();
-        let fake_client = Box::new(RedisClient::create_fake_client(self));
+        let mut fake_client = Box::new(RedisClient::create_fake_client(self));
         loop {
             if let Some(line) = iter.next() {
                 match line {
@@ -82,7 +81,39 @@ impl RedisServer {
                         }
 
                         // Command lookup
-                        
+                        let cmd = lookup_command(&argv[0]);
+                        if cmd.is_none() {
+                            self.log(LogLevel::Warning, &format!("Unknown command '{}' reading the append only file", argv[0]));
+                            exit(1);
+                        }
+
+                        // Try object sharing and encoding
+                        if self.share_objects {
+                            for j in 1..argc {
+                                try_object_sharing(&argv[j]);
+                            }
+                        }
+                        if cmd.unwrap().is_bulk() {
+                            try_object_encoding(&argv[argc - 1]);
+                        }
+
+                        // Run the command in the context of a fake client
+                        fake_client.set_argv(argv.clone());
+                        cmd.unwrap().proc()(&mut fake_client);
+                        // Discard the reply objects list from the fake client
+
+                        // Clean up, ready for the next command
+
+
+                        // Handle swapping while loading big datasets when VM is on
+                        loaded_keys += 1;
+                        if self.vm_enabled && (loaded_keys % 5000) == 0 {
+                            while used_memory() as u128 > self.vm_max_memory {
+                                if self.swap_one_object_blocking().is_err() {
+                                    break;
+                                }
+                            }
+                        }
                     },
                     Err(e) => {
                         read_err(self, &e.to_string());

@@ -1,7 +1,5 @@
-use std::{any::Any, collections::LinkedList, rc::Rc, sync::Arc};
-
+use std::{collections::LinkedList, sync::Arc};
 use crate::redis::log::LogLevel;
-
 use super::{RedisDB, RedisServer, ReplState};
 
 pub struct ClientFlags(u8);
@@ -63,6 +61,10 @@ impl RedisClient {
 
         c.select_db(0, server);
         c
+    }
+
+    pub fn set_argv(&mut self, argv: Vec<String>) {
+        self.argv = argv;
     }
 
     fn select_db(&mut self, id: i32, server: &RedisServer) {

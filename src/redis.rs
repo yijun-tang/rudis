@@ -11,6 +11,7 @@ pub mod vm;
 pub mod aof;
 pub mod client;
 pub mod cmd;
+pub mod obj;
 
 pub static REDIS_VERSION: &str = "1.3.7";
 static MAX_IDLE_TIME: i32 = 60 * 5;             // default client timeout

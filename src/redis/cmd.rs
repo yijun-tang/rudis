@@ -28,6 +28,10 @@ impl CmdFlags {
     fn deny_oom() -> CmdFlags {
         CmdFlags(4)
     }
+
+    fn is_bulk(&self) -> bool {
+        (self.0 & Self::bulk().0) != 0
+    }
 }
 
 impl BitOr for CmdFlags {
@@ -40,7 +44,7 @@ impl BitOr for CmdFlags {
 
 type CommandProc = Arc<dyn Fn(&mut RedisClient) -> () + Sync + Send>;
 
-struct RedisCommand {
+pub struct RedisCommand {
     name: &'static str,
     proc: CommandProc,
     arity: i32,
@@ -55,8 +59,18 @@ struct RedisCommand {
     vm_keystep: i32,            // The step between first and last key
 }
 
-fn lookup_command(name: &str) -> &RedisCommand {
-    todo!()
+impl RedisCommand {
+    pub fn is_bulk(&self) -> bool {
+        self.flags.is_bulk()
+    }
+
+    pub fn proc(&self) -> CommandProc {
+        self.proc.clone()
+    }
+}
+
+pub fn lookup_command(name: &str) -> Option<&RedisCommand> {
+    CMD_TABLE.get(name)
 }
 
 fn get_command(c: &mut RedisClient) {
