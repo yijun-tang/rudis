@@ -59,7 +59,6 @@ pub struct RedisDB {
 pub struct RedisServer {
     port: u16,
     fd: i32,
-    tcp_listener: Option<Box<TcpListener>>,
     dbs: Vec<Arc<RedisDB>>,
     sharing_pool: HashMap<String, String>,      // Pool used for object sharing
     sharing_pool_size: u32,
@@ -148,7 +147,6 @@ impl RedisServer {
         RedisServer { 
             port: SERVER_PORT, 
             fd: -1,
-            tcp_listener: None,
             dbs: Vec::with_capacity(DEFAULT_DBNUM as usize),
             sharing_pool: HashMap::new(),
             dirty: 0,
@@ -259,15 +257,6 @@ impl RedisServer {
             },
         }
 
-        // TODO: fd or TcpListener
-        match TcpListener::bind((&self.bind_addr[..], self.port)) {
-            Ok(l) => { self.tcp_listener = Some(Box::new(l)); },
-            Err(e) => {
-                self.log(LogLevel::Warning, &format!("Opening TCP port: {}", e));
-                exit(1);
-            },
-        }
-
         for i in 0..self.dbnum {
             let mut io_keys: Option<HashMap<String, String>> = None;
             if self.vm_enabled {
@@ -277,12 +266,12 @@ impl RedisServer {
         }
 
         self.el.create_time_event(1, Rc::new(server_cron), None, None);
-        match self.el.create_file_event(self.fd, Mask::Readable, Rc::new(accept_handler), None) {
+        /* match self.el.create_file_event(self.fd, Mask::Readable, Rc::new(accept_handler), None) {
             Ok(_) => {},
             Err(e) => { self.oom(&e); },    // TODO: is it appropriate to call oom?
-        }
+        } */
 
-        if self.append_only {
+        /* if self.append_only {
             match OpenOptions::new().write(true).append(true).create(true).open(self.append_filename) {
                 Ok(f) => { self.append_writer = Some(Box::new(f)); },
                 Err(e) => {
@@ -290,9 +279,9 @@ impl RedisServer {
                     exit(1);
                 },
             }
-        }
+        } */
 
-        if self.vm_enabled { self.init_vm(); }
+        // if self.vm_enabled { self.init_vm(); }
     }
 
     fn append_server_save_params(&mut self, seconds: u128, changes: i32) {
@@ -363,8 +352,11 @@ impl RedisServer {
     }
 }
 
+/// This function gets called every time Redis is entering the
+/// main loop of the event driven library, that is, before to sleep
+/// for ready file descriptors.
 pub fn before_sleep(el: &mut EventLoop) {
-
+    println!("before_sleep");
 }
 
 fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Rc<dyn Any>>) -> i32 {
@@ -372,7 +364,9 @@ fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Rc<dyn Any>>) -
     // with virtual memory and aging there is to store the current time
     // in objects at every object access, and accuracy is not needed.
     // To access a global var is faster than calling time(NULL)
-    todo!()
+
+    println!("server cron time event");
+    1000
 }
 
 fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<Rc<dyn Any>>, mask: Mask) {
