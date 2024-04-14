@@ -1,4 +1,4 @@
-use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, io::Write, process::exit, ptr::null_mut, sync::{Arc, RwLock}};
+use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, io::Write, process::exit, ptr::null_mut, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
 use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, off_t, open, pid_t, setsid, signal, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use once_cell::sync::Lazy;
 use crate::{ae::{BeforeSleepProc, EventLoop, Mask}, anet::tcp_server, util::timestamp};
@@ -15,7 +15,7 @@ pub mod cmd;
 pub mod obj;
 
 pub static REDIS_VERSION: &str = "1.3.7";
-pub static SERVER: Lazy<Arc<RedisServer>> = Lazy::new(|| { Arc::new(RedisServer::new()) });
+pub static SERVER: Lazy<Arc<RwLock<RedisServer>>> = Lazy::new(|| { Arc::new(RwLock::new(RedisServer::new())) });
 static MAX_IDLE_TIME: i32 = 60 * 5;             // default client timeout
 static DEFAULT_DBNUM: i32 = 16;
 static SERVER_PORT: u16 = 6379;
@@ -23,6 +23,14 @@ static SERVER_PORT: u16 = 6379;
 // Hashes related defaults
 static HASH_MAX_ZIPMAP_ENTRIES: usize = 64;
 static HASH_MAX_ZIPMAP_VALUE: usize = 512;
+
+pub fn server_read() -> RwLockReadGuard<'static, RedisServer> {
+    SERVER.read().unwrap()
+}
+
+pub fn server_write() -> RwLockWriteGuard<'static, RedisServer> {
+    SERVER.write().unwrap()
+}
 
 struct SaveParam {
     seconds: u128,
