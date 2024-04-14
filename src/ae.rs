@@ -2,7 +2,7 @@
 //! for the Jim's event-loop (Jim is a Tcl interpreter) but later translated
 //! it in form of a library for easy reuse.
 
-use std::{any::Any, cell::RefCell, mem::zeroed, ops::{BitAnd, BitOr, Deref}, ptr::{null, null_mut}, rc::Rc};
+use std::{any::Any, mem::zeroed, ops::{BitAnd, BitOr, Deref}, ptr::{null, null_mut}, sync::{Arc, RwLock}};
 use libc::{__error, close, fd_set, kevent, kqueue, select, strerror, timespec, timeval, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_DELETE, FD_ISSET, FD_SET, FD_ZERO};
 use crate::util::{add_ms_to_now, get_time_ms};
 
@@ -10,12 +10,12 @@ const SET_SIZE: usize = 1024 * 10;    // Max number of fd supported
 
 static NO_MORE: i32 = -1;
 
-type FileProc = Rc<dyn Fn(&mut EventLoop, i32, Option<Rc<dyn Any>>, Mask) -> ()>;
-type TimeProc = Rc<dyn Fn(&mut EventLoop, u128, Option<Rc<dyn Any>>) -> i32>;
-type EventFinalizerProc = Rc<dyn Fn(&mut EventLoop, Option<Rc<dyn Any>>) -> ()>;
-pub type BeforeSleepProc = Rc<dyn Fn(&mut EventLoop) -> ()>;
+type FileProc = Arc<dyn Fn(&mut EventLoop, i32, Option<Arc<dyn Any + Sync + Send>>, Mask) -> () + Sync + Send>;
+type TimeProc = Arc<dyn Fn(&mut EventLoop, u128, Option<Arc<dyn Any + Sync + Send>>) -> i32 + Sync + Send>;
+type EventFinalizerProc = Arc<dyn Fn(&mut EventLoop, Option<Arc<dyn Any + Sync + Send>>) -> () + Sync + Send>;
+pub type BeforeSleepProc = Arc<dyn Fn(&mut EventLoop) -> () + Sync + Send>;
 
-fn TODO(el: &mut EventLoop, fd: i32, client_data: Option<Rc<dyn Any>>, mask: Mask) {
+fn TODO(el: &mut EventLoop, fd: i32, client_data: Option<Arc<dyn Any + Sync + Send>>, mask: Mask) {
     todo!()
 }
 
@@ -109,7 +109,7 @@ pub struct FileEvent {
     mask: Mask,
     r_file_proc: FileProc,
     w_file_proc: FileProc,
-    client_data: Option<Rc<dyn Any>>,
+    client_data: Option<Arc<dyn Any + Sync + Send>>,
 }
 
 pub struct TimeEvent {
@@ -117,8 +117,8 @@ pub struct TimeEvent {
     when_ms: u128,
     time_proc: TimeProc,
     finalizer_proc: Option<EventFinalizerProc>,
-    client_data: Option<Rc<dyn Any>>,
-    next: Option<Rc<RefCell<TimeEvent>>>,
+    client_data: Option<Arc<dyn Any + Sync + Send>>,
+    next: Option<Arc<RwLock<TimeEvent>>>,
 }
 
 pub struct FiredEvent {
@@ -132,27 +132,27 @@ pub struct EventLoop {
     time_event_next_id: u128,
     events: Vec<FileEvent>,  // Registered events
     fired: Vec<FiredEvent>,  // Fired events
-    time_event_head: Option<Rc<RefCell<TimeEvent>>>,
+    time_event_head: Option<Arc<RwLock<TimeEvent>>>,
     stop: bool,
-    api_data: Box<ApiState>,  // This is used for polling API specific data
+    api_data: Arc<RwLock<ApiState>>,  // This is used for polling API specific data
     before_sleep: Option<BeforeSleepProc>,
 }
 
 impl EventLoop {
-    pub fn create() -> Result<Box<EventLoop>, String> {
+    pub fn create() -> Result<EventLoop, String> {
         let api_state = Self::api_create()?;
-        let mut event_loop = Box::new(EventLoop {
+        let mut event_loop = EventLoop {
             max_fd: -1,
             time_event_next_id: 0,
             events: Vec::with_capacity(SET_SIZE),
             fired: Vec::with_capacity(SET_SIZE),
             time_event_head: None,
             stop: false,
-            api_data: api_state,
+            api_data: Arc::new(RwLock::new(api_state)),
             before_sleep: None,
-        });
+        };
         for _ in 0..SET_SIZE {
-            event_loop.events.push(FileEvent { mask: Mask::None, r_file_proc: Rc::new(TODO), w_file_proc: Rc::new(TODO), client_data: None });
+            event_loop.events.push(FileEvent { mask: Mask::None, r_file_proc: Arc::new(TODO), w_file_proc: Arc::new(TODO), client_data: None });
             event_loop.fired.push(FiredEvent { fd: -1, mask: Mask::None });
         }
 
@@ -164,11 +164,11 @@ impl EventLoop {
     }
 
     pub fn create_file_event(&mut self, fd: i32, mask: Mask, proc: FileProc, 
-        client_data: Option<Rc<dyn Any>>) -> Result<(), String> {
+        client_data: Option<Arc<dyn Any + Sync + Send>>) -> Result<(), String> {
         if fd >= SET_SIZE as i32 {
             return Err(format!("fd should be less than {}", SET_SIZE));
         }
-        self.api_data.add_event(fd, mask)?;
+        self.api_data.read().unwrap().add_event(fd, mask)?;
         let fe = &mut self.events[fd as usize];
         fe.mask = fe.mask | mask;
         if fe.mask.is_readable() {
@@ -206,7 +206,7 @@ impl EventLoop {
             self.max_fd = j;
         }
 
-        match self.api_data.del_event(fd, mask) {
+        match self.api_data.read().unwrap().del_event(fd, mask) {
             Ok(_) => {},
             Err(err) => {
                 eprintln!("{err}");
@@ -215,10 +215,10 @@ impl EventLoop {
     }
 
     pub fn create_time_event(&mut self, milliseconds: u128, proc: TimeProc, 
-        client_data: Option<Rc<dyn Any>>, finalizer_proc: Option<EventFinalizerProc>) -> u128 {
+        client_data: Option<Arc<dyn Any + Sync + Send>>, finalizer_proc: Option<EventFinalizerProc>) -> u128 {
         let id = self.time_event_next_id;
         self.time_event_next_id += 1;
-        let te = Rc::new(RefCell::new(TimeEvent {
+        let te = Arc::new(RwLock::new(TimeEvent {
             id,
             when_ms: add_ms_to_now(milliseconds),
             time_proc: proc,
@@ -233,24 +233,29 @@ impl EventLoop {
 
     pub fn delete_time_event(&mut self, id: u128) -> Result<(), String> {
         let mut te = self.time_event_head.clone();
-        let mut prev: Option<Rc<RefCell<TimeEvent>>> = None;
+        let mut prev: Option<Arc<RwLock<TimeEvent>>> = None;
         while let Some(e) = te.clone() {
-            if e.deref().borrow().id == id {
-                match prev {
-                    Some(ref mut p) => {
-                        p.deref().borrow_mut().next = e.deref().borrow().next.clone();
-                    },
-                    None => {
-                        self.time_event_head = e.deref().borrow().next.clone();
-                    },
-                }
-                if let Some(ref f) = e.deref().borrow().finalizer_proc {
-                    f(self, e.deref().borrow_mut().client_data.take());
-                }
-                return Ok(());
+            match e.deref().read() {
+                Ok(r) => {
+                    if r.id == id {
+                        match prev {
+                            Some(ref mut p) => {
+                                p.deref().write().unwrap().next = e.deref().read().unwrap().next.clone();
+                            },
+                            None => {
+                                self.time_event_head = e.deref().read().unwrap().next.clone();
+                            },
+                        }
+                        if let Some(ref f) = e.deref().read().unwrap().finalizer_proc {
+                            f(self, e.deref().write().unwrap().client_data.take());
+                        }
+                        return Ok(());
+                    }
+                },
+                Err(e) => { return Err(e.to_string()); },
             }
             prev = te;
-            te = e.deref().borrow().next.clone();
+            te = e.deref().read().unwrap().next.clone();
         }
 
         Err(format!("NO event with the specified ID ({id}) found"))
@@ -282,7 +287,7 @@ impl EventLoop {
         // events, in order to sleep until the next time event is ready
         // to fire. 
         if self.max_fd != -1 || (flags.contains_time_event() && flags.is_waiting()) {
-            let mut shortest: Option<Rc<RefCell<TimeEvent>>> = None;
+            let mut shortest: Option<Arc<RwLock<TimeEvent>>> = None;
             let mut time_val_us: Option<u128> = None;
 
             if flags.contains_time_event() && flags.is_waiting() {
@@ -292,10 +297,10 @@ impl EventLoop {
                 // Calculate the time missing for the nearest
                 // timer to fire.
                 let now_ms = get_time_ms();
-                if shrtest.deref().borrow().when_ms < now_ms {
+                if shrtest.deref().read().unwrap().when_ms < now_ms {
                     time_val_us = Some(0);
                 } else {
-                    time_val_us = Some((shrtest.deref().borrow().when_ms - now_ms) * 1000);
+                    time_val_us = Some((shrtest.deref().read().unwrap().when_ms - now_ms) * 1000);
                 }
             } else {
                 // If we have to check for events but need to return
@@ -310,7 +315,7 @@ impl EventLoop {
                 }
             }
 
-            let num_events = self.api_data.poll(&mut self.fired, time_val_us);
+            let num_events = self.api_data.write().unwrap().poll(&mut self.fired, time_val_us);
             for j in 0..num_events {
                 let fd = self.fired[j as usize].fd;
                 let mask = self.fired[j as usize].mask;
@@ -326,7 +331,7 @@ impl EventLoop {
                     // f(self, fd, fe.client_data.clone(), mask);
                 }
                 if fe.mask.is_writable() && mask.is_writable() {
-                    if !rfired || !Rc::ptr_eq(&fe.r_file_proc, &fe.w_file_proc) {
+                    if !rfired || !Arc::ptr_eq(&fe.r_file_proc, &fe.w_file_proc) {
                         let f = fe.w_file_proc.clone();
                         f(self, fd, fe.client_data.clone(), mask);
                     }
@@ -398,7 +403,7 @@ impl EventLoop {
         self.before_sleep = before_sleep;
     }
 
-    fn api_create() -> Result<Box<ApiState>, String> {
+    fn api_create() -> Result<ApiState, String> {
         let mut kqfd = -1;
         let mut err = String::new();
         unsafe {
@@ -408,7 +413,7 @@ impl EventLoop {
         if kqfd == -1 {
             return Err(err);
         }
-        Ok(Box::new(ApiState { kqfd, events: [kevent { ident: 0, filter: 0, flags: 0, fflags: 0, data: 0, udata: null_mut() }; SET_SIZE] }))
+        Ok(ApiState { kqfd, events: [Kevent { ident: 0, filter: 0, flags: 0, fflags: 0, data: 0 }; SET_SIZE] })
     }
 
     /// Search the first timer to fire.
@@ -421,19 +426,19 @@ impl EventLoop {
     /// 1) Insert the event in order, so that the nearest is just the head.
     ///    Much better but still insertion or deletion of timers is O(N).
     /// 2) Use a skiplist to have this operation as O(1) and insertion as O(log(N)).
-    fn search_nearest_timer(&self) -> Option<Rc<RefCell<TimeEvent>>> {
+    fn search_nearest_timer(&self) -> Option<Arc<RwLock<TimeEvent>>> {
         let mut te = self.time_event_head.clone();
-        let mut nearest: Option<Rc<RefCell<TimeEvent>>> = None;
+        let mut nearest: Option<Arc<RwLock<TimeEvent>>> = None;
 
         while let Some(e) = te.clone() {
             if let Some(n) = nearest.clone() {
-                if e.deref().borrow().when_ms < n.deref().borrow().when_ms {
+                if e.deref().read().unwrap().when_ms < n.deref().read().unwrap().when_ms {
                     nearest = te;
                 }
             } else {
                 nearest = te;
             }
-            te = e.deref().borrow().next.clone();
+            te = e.deref().read().unwrap().next.clone();
         }
 
         nearest
@@ -446,15 +451,15 @@ impl EventLoop {
 
         while let Some(e) = te.clone() {
             // How this case happened?
-            if e.deref().borrow().id > max_id {
-                te = e.deref().borrow().next.clone();
+            if e.deref().read().unwrap().id > max_id {
+                te = e.deref().read().unwrap().next.clone();
                 continue;
             }
 
-            if e.deref().borrow().when_ms <= get_time_ms() {
-                let id = e.deref().borrow().id;
-                let client_data = e.deref().borrow().client_data.clone();
-                let f = e.deref().borrow().time_proc.clone();
+            if e.deref().read().unwrap().when_ms <= get_time_ms() {
+                let id = e.deref().read().unwrap().id;
+                let client_data = e.deref().read().unwrap().client_data.clone();
+                let f = e.deref().read().unwrap().time_proc.clone();
                 let ret_val = f(self, id, client_data);
                 processed += 1;
                 /* After an event is processed our time event list may
@@ -471,7 +476,7 @@ impl EventLoop {
                 * deletion (putting references to the nodes to delete into
                 * another linked list). */
                 if ret_val != NO_MORE {
-                    e.deref().borrow_mut().when_ms = add_ms_to_now(ret_val as u128);
+                    e.deref().write().unwrap().when_ms = add_ms_to_now(ret_val as u128);
                 } else {
                     match self.delete_time_event(id) {
                         Ok(_) => {},
@@ -482,7 +487,7 @@ impl EventLoop {
                 }
                 te = self.time_event_head.clone();
             } else {
-                te = e.deref().borrow().next.clone();
+                te = e.deref().read().unwrap().next.clone();
             }
         }
         processed
@@ -491,9 +496,18 @@ impl EventLoop {
 
 }
 
+#[derive(Clone, Copy)]
+pub struct Kevent {
+    ident: i32,
+    filter: i16,
+    flags: u16,
+    fflags: u32,
+    data: isize,
+}
+
 pub struct ApiState {
     kqfd: i32,
-    events: [kevent; SET_SIZE],
+    events: [Kevent; SET_SIZE],
 }
 
 impl ApiState {
@@ -548,11 +562,11 @@ impl ApiState {
         if let Some(tv_us) = time_val_us {
             let timeout = timespec{ tv_sec: (tv_us / 1000_000u128) as i64, tv_nsec: ((tv_us % 1000_000u128) * 1000) as i64 };
             unsafe {
-                ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut kevent, SET_SIZE as i32, &timeout);
+                ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, &timeout);
             }
         } else {
             unsafe {
-                ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut kevent, SET_SIZE as i32, null());
+                ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, null());
             }
         }
 

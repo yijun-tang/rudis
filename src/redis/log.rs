@@ -100,7 +100,7 @@ mod tests {
     #[test]
     fn log_print_test() {
         let s = RedisServer::new();
-        s.log(LogLevel::Notice, &format!("hello {}", "redist"));
-        s.log(LogLevel::Debug, &format!("hello {}", "redist"));
+        s.log(LogLevel::Notice, &format!("hello {}", "redis"));
+        s.log(LogLevel::Debug, &format!("hello {}", "redis"));
     }
 }

@@ -8,7 +8,7 @@ impl RedisServer {
     /// fatal error an error message is logged and the program exists.
     pub fn load_append_only_file(&self) -> Result<(), String> {
         let mut reader: Option<Box<dyn Read>> = None;
-        match OpenOptions::new().read(true).open(self.append_filename) {
+        match OpenOptions::new().read(true).open(&self.append_filename) {
             Ok(f) => {
                 match f.metadata() {
                     Ok(meta_d) => {

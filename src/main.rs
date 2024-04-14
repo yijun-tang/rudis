@@ -1,4 +1,4 @@
-use std::{env, process::exit, rc::Rc, time::Instant};
+use std::{env, process::exit, sync::Arc, time::Instant};
 use rredis::redis::{before_sleep, log::LogLevel, RedisServer, REDIS_VERSION};
 
 fn main() {
@@ -36,6 +36,6 @@ fn main() {
     } */
 
     server.log(LogLevel::Notice, &format!("The server is now ready to accept connections on port {}", server.port()));
-    server.set_before_sleep_proc(Some(Rc::new(before_sleep)));
+    server.set_before_sleep_proc(Some(Arc::new(before_sleep)));
     server.main();
 }

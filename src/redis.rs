@@ -1,6 +1,7 @@
-use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, io::Write, net::TcpListener, process::exit, ptr::null_mut, rc::Rc, sync::Arc};
+use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, io::Write, process::exit, ptr::null_mut, sync::{Arc, RwLock}};
 use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, off_t, open, pid_t, setsid, signal, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
-use crate::{ae::{BeforeSleepProc, EventLoop, Mask}, util::timestamp};
+use once_cell::sync::Lazy;
+use crate::{ae::{BeforeSleepProc, EventLoop, Mask}, anet::tcp_server, util::timestamp};
 use self::{client::RedisClient, log::LogLevel, signal::setup_sig_segv_action};
 
 pub mod config;
@@ -14,6 +15,7 @@ pub mod cmd;
 pub mod obj;
 
 pub static REDIS_VERSION: &str = "1.3.7";
+pub static SERVER: Lazy<Arc<RedisServer>> = Lazy::new(|| { Arc::new(RedisServer::new()) });
 static MAX_IDLE_TIME: i32 = 60 * 5;             // default client timeout
 static DEFAULT_DBNUM: i32 = 16;
 static SERVER_PORT: u16 = 6379;
@@ -66,10 +68,10 @@ pub struct RedisServer {
     clients: LinkedList<RedisClient>,
     slaves: LinkedList<RedisClient>,
     monitors: LinkedList<RedisClient>,
-    el: Box<EventLoop>,
-    cron_loops: i32,                            // number of times the cron function run
-    obj_free_list: LinkedList<Box<dyn Any>>,    // A list of freed objects to avoid malloc()
-    last_save: u64,                             // Unix time of last save succeeded (in seconds)
+    el: Arc<RwLock<EventLoop>>,
+    cron_loops: i32,                                            // number of times the cron function run
+    obj_free_list: LinkedList<Arc<dyn Any + Sync + Send>>,      // A list of freed objects to avoid malloc()
+    last_save: u64,                                             // Unix time of last save succeeded (in seconds)
     // Fields used only for stats
     stat_starttime: u64,                        // server start time (in seconds)
     stat_numcommands: u128,                     // number of processed commands
@@ -82,7 +84,7 @@ pub struct RedisServer {
     daemonize: bool,
     append_only: bool,
     append_fsync: AppendFsync,
-    append_writer: Option<Box<dyn Write>>,
+    append_writer: Option<Arc<dyn Write + Sync + Send>>,
     last_fsync: u64,
     append_fd: i32,
     append_sel_db: i32,
@@ -94,7 +96,7 @@ pub struct RedisServer {
     log_file: String,
     bind_addr: String,
     db_filename: String,
-    append_filename: &'static str,
+    append_filename: String,
     require_pass: String,
     share_objects: bool,
     rdb_compression: bool,
@@ -103,7 +105,7 @@ pub struct RedisServer {
     master_auth: String,
     master_host: String,
     master_port: u16,
-    master: Option<Box<RedisClient>>,       // client that is master for this slave
+    master: Option<Arc<RedisClient>>,       // client that is master for this slave
     repl_state: ReplState,
 
     max_clients: u32,
@@ -127,13 +129,13 @@ pub struct RedisServer {
 
     vm_max_threads: i32,                            // Max number of I/O threads running at the same time
 
-    devnull: Option<Box<dyn Write>>,
+    devnull: Option<Arc<dyn Write + Sync + Send>>,
 }
 
 impl RedisServer {
     pub fn new() -> RedisServer {
         let el = match EventLoop::create() {
-            Ok(el) => { el },
+            Ok(el) => { Arc::new(RwLock::new(el)) },
             Err(e) => {
                 eprintln!("Can't create event loop: {}", e);
                 exit(1);
@@ -179,7 +181,7 @@ impl RedisServer {
             bg_rewrite_child_pid: -1,
             bg_rewrite_buf: String::new(),
             db_filename: "dump.rdb".to_string(),
-            append_filename: "appendonly.aof",
+            append_filename: "appendonly.aof".to_string(),
             require_pass: String::new(),
             share_objects: false,
             rdb_compression: true,
@@ -250,9 +252,17 @@ impl RedisServer {
         }
 
         match OpenOptions::new().write(true).open("/dev/null") {
-            Ok(f) => { self.devnull = Some(Box::new(f)); },
+            Ok(f) => { self.devnull = Some(Arc::new(f)); },
             Err(e) => {
                 self.log(LogLevel::Warning, &format!("Can't open /dev/null: {}", e));
+                exit(1);
+            },
+        }
+
+        match tcp_server(self.port, &self.bind_addr) {
+            Ok(fd) => { self.fd = fd; },
+            Err(e) => {
+                self.log(LogLevel::Warning, &format!("Opening TCP port: {}", e));
                 exit(1);
             },
         }
@@ -265,11 +275,11 @@ impl RedisServer {
             self.dbs.push(Arc::new(RedisDB { dict: HashMap::new(), expires: HashMap::new(), blocking_keys: HashMap::new(), io_keys, id: i }));
         }
 
-        self.el.create_time_event(1, Rc::new(server_cron), None, None);
-        /* match self.el.create_file_event(self.fd, Mask::Readable, Rc::new(accept_handler), None) {
+        self.el.write().unwrap().create_time_event(1, Arc::new(server_cron), None, None);
+        match self.el.write().unwrap().create_file_event(self.fd, Mask::Readable, Arc::new(accept_handler), None) {
             Ok(_) => {},
             Err(e) => { self.oom(&e); },    // TODO: is it appropriate to call oom?
-        } */
+        }
 
         /* if self.append_only {
             match OpenOptions::new().write(true).append(true).create(true).open(self.append_filename) {
@@ -297,7 +307,7 @@ impl RedisServer {
     }
 
     pub fn append_filename(&self) -> &str {
-        self.append_filename
+        &self.append_filename
     }
 
     pub fn db_filename(&self) -> &str {
@@ -309,11 +319,11 @@ impl RedisServer {
     }
 
     pub fn set_before_sleep_proc(&mut self, before_sleep: Option<BeforeSleepProc>) {
-        self.el.set_before_sleep_proc(before_sleep);
+        self.el.write().unwrap().set_before_sleep_proc(before_sleep);
     }
 
     pub fn main(&mut self) {
-        self.el.main();
+        self.el.write().unwrap().main();
     }
 
     #[cfg(target_os = "linux")]
@@ -359,7 +369,7 @@ pub fn before_sleep(el: &mut EventLoop) {
     println!("before_sleep");
 }
 
-fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Rc<dyn Any>>) -> i32 {
+fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) -> i32 {
     // We take a cached value of the unix time in the global state because
     // with virtual memory and aging there is to store the current time
     // in objects at every object access, and accuracy is not needed.
@@ -369,7 +379,8 @@ fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Rc<dyn Any>>) -
     1000
 }
 
-fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<Rc<dyn Any>>, mask: Mask) {
+fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<dyn Any + Sync + Send>>, mask: Mask) {
+
     todo!()
 }
 
