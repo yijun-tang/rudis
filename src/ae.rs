@@ -4,18 +4,18 @@
 
 use std::{any::Any, mem::zeroed, ops::{BitAnd, BitOr, Deref}, ptr::{null, null_mut}, sync::{Arc, RwLock}};
 use libc::{__error, close, fd_set, kevent, kqueue, select, strerror, timespec, timeval, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_DELETE, FD_ISSET, FD_SET, FD_ZERO};
-use crate::util::{add_ms_to_now, get_time_ms};
+use crate::{redis::client::RedisClient, util::{add_ms_to_now, get_time_ms}};
 
 const SET_SIZE: usize = 1024 * 10;    // Max number of fd supported
 
 static NO_MORE: i32 = -1;
 
-type FileProc = Arc<dyn Fn(&mut EventLoop, i32, Option<Arc<dyn Any + Sync + Send>>, Mask) -> () + Sync + Send>;
+type FileProc = Arc<dyn Fn(&mut EventLoop, i32, Option<Arc<RwLock<RedisClient>>>, Mask) -> () + Sync + Send>;
 type TimeProc = Arc<dyn Fn(&mut EventLoop, u128, Option<Arc<dyn Any + Sync + Send>>) -> i32 + Sync + Send>;
 type EventFinalizerProc = Arc<dyn Fn(&mut EventLoop, Option<Arc<dyn Any + Sync + Send>>) -> () + Sync + Send>;
 pub type BeforeSleepProc = Arc<dyn Fn(&mut EventLoop) -> () + Sync + Send>;
 
-fn TODO(el: &mut EventLoop, fd: i32, client_data: Option<Arc<dyn Any + Sync + Send>>, mask: Mask) {
+fn TODO(el: &mut EventLoop, fd: i32, client_data: Option<Arc<RwLock<RedisClient>>>, mask: Mask) {
     todo!()
 }
 
@@ -109,7 +109,7 @@ pub struct FileEvent {
     mask: Mask,
     r_file_proc: FileProc,
     w_file_proc: FileProc,
-    client_data: Option<Arc<dyn Any + Sync + Send>>,
+    client_data: Option<Arc<RwLock<RedisClient>>>,
 }
 
 pub struct TimeEvent {
@@ -164,7 +164,7 @@ impl EventLoop {
     }
 
     pub fn create_file_event(&mut self, fd: i32, mask: Mask, proc: FileProc, 
-        client_data: Option<Arc<dyn Any + Sync + Send>>) -> Result<(), String> {
+        client_data: Option<Arc<RwLock<RedisClient>>>) -> Result<(), String> {
         if fd >= SET_SIZE as i32 {
             return Err(format!("fd should be less than {}", SET_SIZE));
         }

@@ -2,6 +2,8 @@
 //! 
 //! This is a wrapper allocator to variate upon the Operatint System underlying.
 
-pub fn used_memory() -> usize {
-    todo!()
+pub fn used_memory() -> u128 {
+    0
+
+    // TODO
 }

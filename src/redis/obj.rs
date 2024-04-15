@@ -102,15 +102,49 @@ pub enum RedisObject {
     Hash,
 }
 
-enum StringStorageType {
+impl RedisObject {
+    pub fn string(&self) -> Option<&StringStorageType> {
+        match self {
+            Self::String {ptr} => { Some(ptr) },
+            _ => { None },
+        }
+    }
+
+    /// Get a decoded version of an encoded object (returned as a new object).
+    /// If the object is already raw-encoded just increment the ref count.
+    pub fn get_decoded(self) -> RedisObject {
+        match &self {
+            Self::String { ptr } => {
+                match ptr {
+                    StringStorageType::Integer(n) => {
+                        RedisObject::String { ptr: StringStorageType::String(n.to_string()) }
+                    },
+                    _ => { self },
+                }
+            },
+            _ => { self },
+        }
+    }
+}
+
+pub enum StringStorageType {
     String(String),     // raw string
     Integer(isize),     // encoded as integer
 } 
 
-pub fn try_object_sharing(obj: &String) {
+impl StringStorageType {
+    pub fn string(&self) -> Option<&str> {
+        match self {
+            Self::String(s) => { Some(s) },
+            _ => { None }
+        }
+    }
+}
+
+pub fn try_object_sharing(obj: Arc<RedisObject>) {
     todo!()
 }
 
-pub fn try_object_encoding(obj: &String) {
+pub fn try_object_encoding(obj: Arc<RedisObject>) {
     todo!()
 }

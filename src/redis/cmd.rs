@@ -1,11 +1,15 @@
 use std::{collections::HashMap, ops::BitOr, sync::Arc};
 use once_cell::sync::Lazy;
-use super::client::RedisClient;
+use super::{client::RedisClient, server_write};
 
+pub static MAX_SIZE_INLINE_CMD: usize = 1024 * 1024 * 256;  // max bytes in inline command
 static CMD_TABLE: Lazy<HashMap<&str, RedisCommand>> = Lazy::new(|| {
     HashMap::from([
         ("get", RedisCommand { name: "get", proc: Arc::new(get_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 }),
         ("set", RedisCommand { name: "set", proc: Arc::new(set_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 }),
+        ("ping", RedisCommand { name: "ping", proc: Arc::new(ping_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 }),
+        ("exec", RedisCommand { name: "exec", proc: Arc::new(exec_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 }),
+        ("discard", RedisCommand { name: "discard", proc: Arc::new(discard_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 }),
     ])
 });
 
@@ -29,8 +33,12 @@ impl CmdFlags {
         CmdFlags(4)
     }
 
-    fn is_bulk(&self) -> bool {
+    pub fn is_bulk(&self) -> bool {
         (self.0 & Self::bulk().0) != 0
+    }
+
+    pub fn is_deny_oom(&self) -> bool {
+        (self.0 & Self::deny_oom().0) != 0
     }
 }
 
@@ -60,6 +68,18 @@ pub struct RedisCommand {
 }
 
 impl RedisCommand {
+    pub fn arity(&self) -> i32 {
+        self.arity
+    }
+
+    pub fn name(&self) -> &str {
+        self.name
+    }
+
+    pub fn flags(&self) -> &CmdFlags {
+        &self.flags
+    }
+
     pub fn is_bulk(&self) -> bool {
         self.flags.is_bulk()
     }
@@ -88,4 +108,26 @@ fn set_command(c: &mut RedisClient) {
 
 fn set_generic_command(c: &mut RedisClient, nx: i32) {
     todo!()
+}
+
+fn ping_command(c: &mut RedisClient) {
+    todo!()
+}
+
+pub fn exec_command(c: &mut RedisClient) {
+    todo!()
+}
+
+pub fn discard_command(c: &mut RedisClient) {
+    todo!()
+}
+
+/// Call() is the core of Redis execution of a command
+pub fn call(c: &mut RedisClient, cmd: &RedisCommand) {
+    let f = &cmd.proc;
+    f(c);
+
+    // TODO
+
+    server_write().stat_numcommands += 1;
 }

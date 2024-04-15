@@ -1,6 +1,6 @@
-use std::{fs::OpenOptions, io::{BufRead, BufReader, Read}, process::exit};
+use std::{fs::OpenOptions, io::{BufRead, BufReader, Read}, process::exit, sync::Arc};
 use crate::{redis::{log::LogLevel, RedisClient}, zmalloc::used_memory};
-use super::{cmd::lookup_command, obj::{try_object_encoding, try_object_sharing}, RedisServer};
+use super::{cmd::lookup_command, obj::{try_object_encoding, try_object_sharing, RedisObject, StringStorageType}, RedisServer};
 
 impl RedisServer {
     /// Replay the append log file. On error REDIS_OK is returned. On non fatal
@@ -41,7 +41,7 @@ impl RedisServer {
 
         let mut loaded_keys = 0u128;
         let mut iter = BufReader::new(reader.unwrap()).lines();
-        let mut fake_client = Box::new(RedisClient::create_fake_client(self));
+        let mut fake_client = Box::new(RedisClient::create_fake_client());
         loop {
             if let Some(line) = iter.next() {
                 match line {
@@ -50,7 +50,7 @@ impl RedisServer {
                             fmt_err(self);
                         }
                         let mut argc = 0;
-                        let mut argv: Vec<String> = Vec::new();
+                        let mut argv: Vec<Arc<RedisObject>> = Vec::new();
                         if let Ok(i) = (line[1..]).parse() {
                             argc = i;
                         } else { fmt_err(self); }
@@ -73,7 +73,7 @@ impl RedisServer {
                                 match line_a {
                                     Ok(line_a) => {
                                         if line_a.len() != len as usize { fmt_err(self); }
-                                        argv.push(line_a);
+                                        argv.push(Arc::new(RedisObject::String { ptr: StringStorageType::String(line_a) }));
                                     },
                                     Err(e) => { read_err(self, &e.to_string()); },
                                 }
@@ -81,20 +81,21 @@ impl RedisServer {
                         }
 
                         // Command lookup
-                        let cmd = lookup_command(&argv[0]);
+                        let name = argv[0].string().unwrap().string().unwrap();
+                        let cmd = lookup_command(name);
                         if cmd.is_none() {
-                            self.log(LogLevel::Warning, &format!("Unknown command '{}' reading the append only file", argv[0]));
+                            self.log(LogLevel::Warning, &format!("Unknown command '{}' reading the append only file", name));
                             exit(1);
                         }
 
                         // Try object sharing and encoding
                         if self.share_objects {
                             for j in 1..argc {
-                                try_object_sharing(&argv[j]);
+                                try_object_sharing(argv[j].clone());
                             }
                         }
                         if cmd.unwrap().is_bulk() {
-                            try_object_encoding(&argv[argc - 1]);
+                            try_object_encoding(argv[argc - 1].clone());
                         }
 
                         // Run the command in the context of a fake client

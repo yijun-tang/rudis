@@ -1,7 +1,7 @@
 use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, io::Write, process::exit, ptr::null_mut, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
 use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, off_t, open, pid_t, setsid, signal, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use once_cell::sync::Lazy;
-use crate::{ae::{BeforeSleepProc, EventLoop, Mask}, anet::tcp_server, util::timestamp};
+use crate::{ae::{BeforeSleepProc, EventLoop, Mask}, anet::{accept, tcp_server}, util::timestamp};
 use self::{client::RedisClient, log::LogLevel, signal::setup_sig_segv_action};
 
 pub mod config;
@@ -16,6 +16,7 @@ pub mod obj;
 
 pub static REDIS_VERSION: &str = "1.3.7";
 pub static SERVER: Lazy<Arc<RwLock<RedisServer>>> = Lazy::new(|| { Arc::new(RwLock::new(RedisServer::new())) });
+pub const IO_BUF_LEN: usize = 1024;
 static MAX_IDLE_TIME: i32 = 60 * 5;             // default client timeout
 static DEFAULT_DBNUM: i32 = 16;
 static SERVER_PORT: u16 = 6379;
@@ -43,6 +44,7 @@ enum AppendFsync {
     EverySec,
 }
 
+#[derive(PartialEq)]
 enum ReplState {
     // Slave replication state - slave side
     None,       // No active replication
@@ -73,7 +75,7 @@ pub struct RedisServer {
     sharing_pool: HashMap<String, String>,      // Pool used for object sharing
     sharing_pool_size: u32,
     dirty: u128,                                // changes to DB from the last save
-    clients: LinkedList<RedisClient>,
+    clients: LinkedList<Arc<RwLock<RedisClient>>>,
     slaves: LinkedList<RedisClient>,
     monitors: LinkedList<RedisClient>,
     el: Arc<RwLock<EventLoop>>,
@@ -302,6 +304,21 @@ impl RedisServer {
         // if self.vm_enabled { self.init_vm(); }
     }
 
+    /// This function gets called when 'maxmemory' is set on the config file to limit
+    /// the max memory used by the server, and we are out of memory.
+    /// This function will try to, in order:
+    /// 
+    /// - Free objects from the free list
+    /// - Try to remove keys with an EXPIRE set
+    /// 
+    /// It is not possible to free enough memory to reach used-memory < maxmemory
+    /// the server will start refusing commands that will enlarge even more the
+    /// memory usage.
+    pub fn free_memory_if_needed(&mut self) {
+        // TODO
+        self.log(LogLevel::Warning, "free memory if needed!!!");
+    }
+
     fn append_server_save_params(&mut self, seconds: u128, changes: i32) {
         self.save_params.push(SaveParam { seconds, changes });
     }
@@ -387,7 +404,16 @@ fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Arc<dyn Any + S
     1000
 }
 
-fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<dyn Any + Sync + Send>>, mask: Mask) {
+fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<RedisClient>>>, mask: Mask) {
+    let (c_fd, c_ip, c_port) = match accept(fd) {
+        Ok((c_fd, c_ip, c_port)) => { (c_fd, c_ip, c_port) },
+        Err(e) => {
+            server_read().log(LogLevel::Warning, &format!("Accepting client connection: {}", e));
+            return;
+        },
+    };
+    server_read().log(LogLevel::Verbose, &format!("Accepted {c_ip}:{c_port}"));
+
 
     todo!()
 }
