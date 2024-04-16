@@ -3,8 +3,8 @@
 //! it in form of a library for easy reuse.
 
 use std::{any::Any, mem::zeroed, ops::{BitAnd, BitOr, Deref}, ptr::{null, null_mut}, sync::{Arc, RwLock}};
-use libc::{__error, close, fd_set, kevent, kqueue, select, strerror, timespec, timeval, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_DELETE, FD_ISSET, FD_SET, FD_ZERO};
-use crate::{redis::client::RedisClient, util::{add_ms_to_now, get_time_ms}};
+use libc::{close, fd_set, timespec, timeval, FD_ISSET, FD_SET, FD_ZERO};
+use crate::{redis::client::RedisClient, util::{add_ms_to_now, error, get_time_ms}};
 
 const SET_SIZE: usize = 1024 * 10;    // Max number of fd supported
 
@@ -350,7 +350,7 @@ impl EventLoop {
     /// Wait for millseconds until the given file descriptor becomes
     /// writable/readable/exception
     pub fn wait(fd: i32, mask: Mask, milliseconds: u128) -> Result<Mask, i32> {
-        let mut timeout = timeval { tv_sec: (milliseconds / 1000) as i64, tv_usec: ((milliseconds % 1000) * 1000) as i32 };
+        let mut timeout = timeval { tv_sec: (milliseconds / 1000) as i64, tv_usec: ((milliseconds % 1000) * 1000) as i64 };
         let mut ret_mask = Mask::None;
         let mut ret_val = 0;
         let mut rfds: fd_set;
@@ -401,19 +401,6 @@ impl EventLoop {
 
     pub fn set_before_sleep_proc(&mut self, before_sleep: Option<BeforeSleepProc>) {
         self.before_sleep = before_sleep;
-    }
-
-    fn api_create() -> Result<ApiState, String> {
-        let mut kqfd = -1;
-        let mut err = String::new();
-        unsafe {
-            kqfd = kqueue();
-            err = format!("{}", *strerror(*__error()));
-        }
-        if kqfd == -1 {
-            return Err(err);
-        }
-        Ok(ApiState { kqfd, events: [Kevent { ident: 0, filter: 0, flags: 0, fflags: 0, data: 0 }; SET_SIZE] })
     }
 
     /// Search the first timer to fire.
@@ -496,121 +483,269 @@ impl EventLoop {
 
 }
 
-#[derive(Clone, Copy)]
-pub struct Kevent {
-    ident: i32,
-    filter: i16,
-    flags: u16,
-    fflags: u32,
-    data: isize,
-}
-
-pub struct ApiState {
-    kqfd: i32,
-    events: [Kevent; SET_SIZE],
-}
-
-impl ApiState {
-    fn add_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
-        let mut ke = kevent {
-            ident: fd as usize,
-            filter: EVFILT_READ,
-            flags: EV_ADD,
-            fflags: 0,
-            data: 0,
-            udata: null_mut(),
-        };
-        if mask == Mask::Writable {
-            ke.filter = EVFILT_WRITE;
-        }
-        if mask == Mask::Readable || mask == Mask::Writable {
-            unsafe {
-                if kevent(self.kqfd, &ke, 1, null_mut(), 0, null()) == -1 {
-                    return Err(format!("ApiState.add_event: {}", *strerror(*__error())));
-                }
-            }
-        }
-        
-        Ok(())
+#[cfg(target_os = "macos")]
+mod kqueue {
+    #[derive(Clone, Copy)]
+    pub struct Kevent {
+        ident: i32,
+        filter: i16,
+        flags: u16,
+        fflags: u32,
+        data: isize,
     }
 
-    fn del_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
-        let mut ke = kevent {
-            ident: fd as usize,
-            filter: EVFILT_READ,
-            flags: EV_DELETE,
-            fflags: 0,
-            data: 0,
-            udata: null_mut(),
-        };
-        if mask == Mask::Writable {
-            ke.filter = EVFILT_WRITE;
-        }
-        if mask == Mask::Readable || mask == Mask::Writable {
-            unsafe {
-                if kevent(self.kqfd, &ke, 1, null_mut(), 0, null()) == -1 {
-                    return Err(format!("ApiState.del_event: {}", *strerror(*__error())));
-                }
-            }
-        }
-        
-        Ok(())
+    pub struct ApiState {
+        kqfd: i32,
+        events: [Kevent; SET_SIZE],
     }
 
-    fn poll(&mut self, fired: &mut Vec<FiredEvent>, time_val_us: Option<u128>) -> i32 {
-        let mut ret_val = 0;
-        if let Some(tv_us) = time_val_us {
-            let timeout = timespec{ tv_sec: (tv_us / 1000_000u128) as i64, tv_nsec: ((tv_us % 1000_000u128) * 1000) as i64 };
-            unsafe {
-                ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, &timeout);
+    impl ApiState {
+        fn add_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
+            let mut ke = kevent {
+                ident: fd as usize,
+                filter: EVFILT_READ,
+                flags: EV_ADD,
+                fflags: 0,
+                data: 0,
+                udata: null_mut(),
+            };
+            if mask == Mask::Writable {
+                ke.filter = EVFILT_WRITE;
             }
-        } else {
-            unsafe {
-                ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, null());
+            if mask == Mask::Readable || mask == Mask::Writable {
+                unsafe {
+                    if kevent(self.kqfd, &ke, 1, null_mut(), 0, null()) == -1 {
+                        return Err(format!("ApiState.add_event: {}", *strerror(error())));
+                    }
+                }
             }
+            
+            Ok(())
         }
 
-        let mut num_events = 0;
-        if ret_val > 0 {
-            num_events = ret_val;
-
-            for j in 0..num_events {
-                let mut mask = Mask::None;
-                let e = &self.events[j as usize];
-
-                if e.filter == EVFILT_READ {
-                    mask = mask | Mask::Readable;
-                }
-                if e.filter == EVFILT_WRITE {
-                    mask = mask | Mask::Writable;
-                }
-
-                fired[j as usize].fd = e.ident as i32;
-                fired[j as usize].mask = mask;
+        fn del_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
+            let mut ke = kevent {
+                ident: fd as usize,
+                filter: EVFILT_READ,
+                flags: EV_DELETE,
+                fflags: 0,
+                data: 0,
+                udata: null_mut(),
+            };
+            if mask == Mask::Writable {
+                ke.filter = EVFILT_WRITE;
             }
+            if mask == Mask::Readable || mask == Mask::Writable {
+                unsafe {
+                    if kevent(self.kqfd, &ke, 1, null_mut(), 0, null()) == -1 {
+                        return Err(format!("ApiState.del_event: {}", *strerror(error())));
+                    }
+                }
+            }
+            
+            Ok(())
         }
 
-        num_events
+        fn poll(&mut self, fired: &mut Vec<FiredEvent>, time_val_us: Option<u128>) -> i32 {
+            let mut ret_val = 0;
+            if let Some(tv_us) = time_val_us {
+                let timeout = timespec{ tv_sec: (tv_us / 1000_000u128) as i64, tv_nsec: ((tv_us % 1000_000u128) * 1000) as i64 };
+                unsafe {
+                    ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, &timeout);
+                }
+            } else {
+                unsafe {
+                    ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, null());
+                }
+            }
+
+            let mut num_events = 0;
+            if ret_val > 0 {
+                num_events = ret_val;
+
+                for j in 0..num_events {
+                    let mut mask = Mask::None;
+                    let e = &self.events[j as usize];
+
+                    if e.filter == EVFILT_READ {
+                        mask = mask | Mask::Readable;
+                    }
+                    if e.filter == EVFILT_WRITE {
+                        mask = mask | Mask::Writable;
+                    }
+
+                    fired[j as usize].fd = e.ident as i32;
+                    fired[j as usize].mask = mask;
+                }
+            }
+
+            num_events
+        }
+
+        fn name() -> String {
+            "kqueue".to_string()
+        }
     }
 
-    fn name() -> String {
-        "kqueue".to_string()
+    impl Drop for ApiState {
+        fn drop(&mut self) {
+            let mut ret_no = -1;
+            let mut err = String::new();
+            unsafe {
+                ret_no = close(self.kqfd);
+                err = format!("{}", *strerror(error()));
+            }
+            if ret_no == -1 {
+                eprintln!("ApiState.drop failed: {}", err);
+            }
+        }
     }
-}
 
-impl Drop for ApiState {
-    fn drop(&mut self) {
-        let mut ret_no = -1;
+    fn api_create() -> Result<ApiState, String> {
+        let mut kqfd = -1;
         let mut err = String::new();
         unsafe {
-            ret_no = close(self.kqfd);
-            err = format!("{}", *strerror(*__error()));
+            kqfd = kqueue();
+            err = format!("{}", *strerror(error()));
         }
-        if ret_no == -1 {
-            eprintln!("ApiState.drop failed: {}", err);
+        if kqfd == -1 {
+            return Err(err);
         }
+        Ok(ApiState { kqfd, events: [Kevent { ident: 0, filter: 0, flags: 0, fflags: 0, data: 0 }; SET_SIZE] })
     }
 }
+
+#[cfg(target_os = "linux")]
+mod epoll {
+    use libc::{close, epoll_create, epoll_event, strerror};
+
+    use crate::util::error;
+
+    use super::SET_SIZE;
+
+
+    pub struct ApiState {
+        epfd: i32,
+        events: [epoll_event; SET_SIZE],
+    }
+
+    impl ApiState {
+        fn add_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
+            let mut ke = kevent {
+                ident: fd as usize,
+                filter: EVFILT_READ,
+                flags: EV_ADD,
+                fflags: 0,
+                data: 0,
+                udata: null_mut(),
+            };
+            if mask == Mask::Writable {
+                ke.filter = EVFILT_WRITE;
+            }
+            if mask == Mask::Readable || mask == Mask::Writable {
+                unsafe {
+                    if kevent(self.kqfd, &ke, 1, null_mut(), 0, null()) == -1 {
+                        return Err(format!("ApiState.add_event: {}", *strerror(error())));
+                    }
+                }
+            }
+            
+            Ok(())
+        }
+
+        fn del_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
+            let mut ke = kevent {
+                ident: fd as usize,
+                filter: EVFILT_READ,
+                flags: EV_DELETE,
+                fflags: 0,
+                data: 0,
+                udata: null_mut(),
+            };
+            if mask == Mask::Writable {
+                ke.filter = EVFILT_WRITE;
+            }
+            if mask == Mask::Readable || mask == Mask::Writable {
+                unsafe {
+                    if kevent(self.kqfd, &ke, 1, null_mut(), 0, null()) == -1 {
+                        return Err(format!("ApiState.del_event: {}", *strerror(error())));
+                    }
+                }
+            }
+            
+            Ok(())
+        }
+
+        fn poll(&mut self, fired: &mut Vec<FiredEvent>, time_val_us: Option<u128>) -> i32 {
+            let mut ret_val = 0;
+            if let Some(tv_us) = time_val_us {
+                let timeout = timespec{ tv_sec: (tv_us / 1000_000u128) as i64, tv_nsec: ((tv_us % 1000_000u128) * 1000) as i64 };
+                unsafe {
+                    ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, &timeout);
+                }
+            } else {
+                unsafe {
+                    ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, null());
+                }
+            }
+
+            let mut num_events = 0;
+            if ret_val > 0 {
+                num_events = ret_val;
+
+                for j in 0..num_events {
+                    let mut mask = Mask::None;
+                    let e = &self.events[j as usize];
+
+                    if e.filter == EVFILT_READ {
+                        mask = mask | Mask::Readable;
+                    }
+                    if e.filter == EVFILT_WRITE {
+                        mask = mask | Mask::Writable;
+                    }
+
+                    fired[j as usize].fd = e.ident as i32;
+                    fired[j as usize].mask = mask;
+                }
+            }
+
+            num_events
+        }
+
+        fn name() -> String {
+            "kqueue".to_string()
+        }
+    }
+
+    impl Drop for ApiState {
+        fn drop(&mut self) {
+            let mut ret_no = -1;
+            let mut err = String::new();
+            unsafe {
+                ret_no = close(self.epfd);
+                err = format!("{}", *strerror(error()));
+            }
+            if ret_no == -1 {
+                eprintln!("ApiState.drop failed: {}", err);
+            }
+        }
+    }
+
+    fn api_create() -> Result<ApiState, String> {
+        let mut epfd = -1;
+        let mut err = String::new();
+        unsafe {
+            epfd = epoll_create(1024);  // 1024 is just an hint for the kernel
+            err = format!("{}", *strerror(error()));
+        }
+        if epfd == -1 {
+            return Err(err);
+        }
+        Ok(ApiState { epfd, events: [epoll_event { events: 0, u64: 0  }; SET_SIZE] })
+    }
+}
+
+
 
 #[cfg(test)]
 mod tests {

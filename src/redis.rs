@@ -360,6 +360,8 @@ impl RedisServer {
 
     #[cfg(target_os = "linux")]
     fn linux_overcommit_memory_value(&self) -> i32 {
+        use std::io::{BufRead, BufReader, Read};
+
         let mut reader: Option<Box<dyn Read>> = None;
         match OpenOptions::new().read(true).open("/proc/sys/vm/overcommit_memory") {
             Ok(f) => { reader = Some(Box::new(f)); },

@@ -1,6 +1,6 @@
 use std::{fs::{File, OpenOptions}, io::{self, BufRead, BufReader, Read}, process::exit};
-use libc::{__error, chdir, strerror};
-use crate::util::yes_no_to_bool;
+use libc::{chdir, strerror};
+use crate::util::{error, yes_no_to_bool};
 use super::{log::LogLevel, AppendFsync, RedisServer, ReplState};
 
 impl RedisServer {
@@ -89,7 +89,7 @@ impl RedisServer {
                         let mut err = String::new();
                         let ret_val = unsafe {
                             let ret = chdir(argv[1].as_ptr() as *const i8);
-                            if ret == -1 { err = format!("{}", *strerror(*__error())); }
+                            if ret == -1 { err = format!("{}", *strerror(error())); }
                             ret
                         };
                         if ret_val == -1 {

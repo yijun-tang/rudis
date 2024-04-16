@@ -1,7 +1,7 @@
 use std::{borrow::BorrowMut, collections::LinkedList, ops::Deref, sync::{Arc, RwLock}};
-use libc::{__error, c_void, read, strerror, EAGAIN};
+use libc::{c_void, read, strerror, EAGAIN};
 
-use crate::{ae::{EventLoop, Mask}, anet::{nonblock, tcp_no_delay}, redis::{cmd::{discard_command, exec_command, lookup_command}, log::LogLevel, server_read, server_write, IO_BUF_LEN}, util::timestamp, zmalloc::used_memory};
+use crate::{ae::{EventLoop, Mask}, anet::{nonblock, tcp_no_delay}, redis::{cmd::{discard_command, exec_command, lookup_command}, log::LogLevel, server_read, server_write, IO_BUF_LEN}, util::{error, timestamp}, zmalloc::used_memory};
 use super::{cmd::{call, RedisCommand, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType}, RedisDB, ReplState};
 
 pub struct ClientFlags(u8);
@@ -476,10 +476,10 @@ fn read_query_from_client(_el: &mut EventLoop, fd: i32, priv_data: Option<Arc<Rw
     unsafe {
         nread = read(fd, &mut buf[0] as *mut _ as *mut c_void, IO_BUF_LEN);
         if nread == -1 {
-            if *__error() == EAGAIN {
+            if error() == EAGAIN {
                 nread = 0;
             } else {
-                server_read().log(LogLevel::Verbose, &format!("Reading from client: {}", *strerror(*__error())));
+                server_read().log(LogLevel::Verbose, &format!("Reading from client: {}", *strerror(error())));
                 // TODO: free client?
                 return;
             }

@@ -1,7 +1,9 @@
 //! Basic TCP socket stuff made a bit less boring.
 
 use std::{mem::{size_of, size_of_val, zeroed}, net::{IpAddr, Ipv4Addr}};
-use libc::{__error, bind, c_void, close, fcntl, listen, setsockopt, sockaddr, sockaddr_in, socket, strerror, AF_INET, EINTR, F_GETFL, F_SETFL, INADDR_ANY, IPPROTO_TCP, O_NONBLOCK, SOCK_STREAM, SOL_SOCKET, SO_KEEPALIVE, SO_REUSEADDR, TCP_NODELAY};
+use libc::{bind, c_void, close, fcntl, listen, setsockopt, sockaddr, sockaddr_in, socket, strerror, AF_INET, EINTR, F_GETFL, F_SETFL, INADDR_ANY, IPPROTO_TCP, O_NONBLOCK, SOCK_STREAM, SOL_SOCKET, SO_KEEPALIVE, SO_REUSEADDR, TCP_NODELAY};
+
+use crate::util::error;
 
 pub fn tcp_connect(addr: &str, port: u16) -> Result<(), &'static str> {
     todo!()
@@ -27,14 +29,14 @@ pub fn tcp_server(port: u16, bindaddr: &str) -> Result<i32, String> {
     unsafe {
         s = socket(AF_INET, SOCK_STREAM, 0);
         if s == -1 {
-            return Err(format!("socket: {}\n", *strerror(*__error())));
+            return Err(format!("socket: {}\n", *strerror(error())));
         }
         if setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &on as *const _ as *const c_void, size_of::<i32>() as u32) == -1 {
             close(s);
-            return Err(format!("setsockopt SO_REUSEADDR: {}\n", *strerror(*__error())));
+            return Err(format!("setsockopt SO_REUSEADDR: {}\n", *strerror(error())));
         }
         sa = zeroed();
-        sa.sin_family = AF_INET as u8;
+        sa.sin_family = AF_INET as u16;
         sa.sin_port = port.to_be();     // Network byte order is big endian, or most significant byte first
         sa.sin_addr.s_addr = INADDR_ANY.to_be();
         if !bindaddr.is_empty() {
@@ -53,12 +55,12 @@ pub fn tcp_server(port: u16, bindaddr: &str) -> Result<i32, String> {
 
         if bind(s, &sa as *const _ as *const sockaddr, size_of::<sockaddr>() as u32) == -1 {
             close(s);
-            return Err(format!("bind: {}\n", *strerror(*__error())));
+            return Err(format!("bind: {}\n", *strerror(error())));
         }
 
         if listen(s, 511) == -1 {   // the magic 511 constant is from nginx
             close(s);
-            return Err(format!("listen: {}\n", *strerror(*__error())));
+            return Err(format!("listen: {}\n", *strerror(error())));
         }
     }
     Ok(s)
@@ -73,10 +75,10 @@ pub fn accept(serversock: i32) -> Result<(i32, u32, u16), String> {
             let mut len = size_of::<sockaddr>() as u32;
             fd = libc::accept(serversock, &mut sa as *mut _ as *mut sockaddr, &mut len);
             if fd == -1 {
-                if *__error() == EINTR {
+                if error() == EINTR {
                     continue;
                 } else {
-                    return Err(format!("accept: {}\n", *strerror(*__error())));
+                    return Err(format!("accept: {}\n", *strerror(error())));
                 }
             }
             break;
@@ -100,10 +102,10 @@ pub fn nonblock(fd: i32) -> Result<(), String> {
     unsafe {
         let flag = fcntl(fd, F_GETFL);
         if flag == -1 {
-            return Err(format!("fcntl(F_GETFL): {}\n", *strerror(*__error())));
+            return Err(format!("fcntl(F_GETFL): {}\n", *strerror(error())));
         }
         if fcntl(fd, F_SETFL, flag | O_NONBLOCK) == -1 {
-            return Err(format!("fcntl(F_SETFL,O_NONBLOCK): {}\n", *strerror(*__error())));
+            return Err(format!("fcntl(F_SETFL,O_NONBLOCK): {}\n", *strerror(error())));
         }
     }
     Ok(())
@@ -113,7 +115,7 @@ pub fn tcp_no_delay(fd: i32) -> Result<(), String> {
     let yes = 1;
     unsafe {
         if setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes as *const _ as *const c_void, size_of_val(&yes) as u32) == -1 {
-            return Err(format!("setsockopt TCP_NODELAY: {}\n", *strerror(*__error())));
+            return Err(format!("setsockopt TCP_NODELAY: {}\n", *strerror(error())));
         }
     }
     Ok(())
@@ -122,7 +124,7 @@ pub fn tcp_no_delay(fd: i32) -> Result<(), String> {
 pub unsafe fn tcp_keep_alive(fd: i32) -> Result<(), String> {
     let yes = 1;
     if setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &yes as *const _ as *const c_void, size_of_val(&yes) as u32) == -1 {
-        return Err(format!("setsockopt SO_KEEPALIVE: {}\n", *strerror(*__error())));
+        return Err(format!("setsockopt SO_KEEPALIVE: {}\n", *strerror(error())));
     }
     Ok(())
 }
