@@ -169,7 +169,7 @@ impl EventLoop {
         if fd >= SET_SIZE as i32 {
             return Err(format!("fd should be less than {}", SET_SIZE));
         }
-        self.api_data.read().unwrap().add_event(fd, mask)?;
+        self.api_data.read().unwrap().add_event(fd, self.events[fd as usize].mask, mask)?;
         let fe = &mut self.events[fd as usize];
         fe.mask = fe.mask | mask;
         if fe.mask.is_readable() {
@@ -207,7 +207,7 @@ impl EventLoop {
             self.max_fd = j;
         }
 
-        match self.api_data.read().unwrap().del_event(fd, mask) {
+        match self.api_data.read().unwrap().del_event(fd, self.events[fd as usize].mask, mask) {
             Ok(_) => {},
             Err(err) => {
                 eprintln!("{err}");
@@ -629,11 +629,13 @@ mod io_event {
 
 #[cfg(target_os = "linux")]
 mod io_event {
-    use libc::{close, epoll_create, epoll_event, strerror};
+    use std::mem::zeroed;
+
+    use libc::{close, epoll_create, epoll_ctl, epoll_event, epoll_wait, strerror, EPOLLIN, EPOLLOUT, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD};
 
     use crate::util::error;
 
-    use super::SET_SIZE;
+    use super::{FiredEvent, Mask, SET_SIZE};
 
 
     pub struct ApiState {
@@ -642,46 +644,58 @@ mod io_event {
     }
 
     impl ApiState {
-        pub fn add_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
-            let mut ke = kevent {
-                ident: fd as usize,
-                filter: EVFILT_READ,
-                flags: EV_ADD,
-                fflags: 0,
-                data: 0,
-                udata: null_mut(),
+        pub fn add_event(&self, fd: i32, old: Mask, mut mask: Mask) -> Result<(), String> {
+            let mut ee: epoll_event;
+            // If the fd was already monitored for some event, we need a MOD
+            // operation. Otherwise we need an ADD operation.
+            let op = match Mask::None {
+                Mask::None => { EPOLL_CTL_ADD },
+                _ => { EPOLL_CTL_MOD },
             };
-            if mask == Mask::Writable {
-                ke.filter = EVFILT_WRITE;
-            }
-            if mask == Mask::Readable || mask == Mask::Writable {
-                unsafe {
-                    if kevent(self.kqfd, &ke, 1, null_mut(), 0, null()) == -1 {
-                        return Err(format!("ApiState.add_event: {}", *strerror(error())));
-                    }
+
+            unsafe {
+                ee = zeroed();
+                mask = mask | old;  // Merge old events
+                if mask.is_readable() {
+                    ee.events |= EPOLLIN as u32;
+                }
+                if mask.is_writable() {
+                    ee.events |= EPOLLOUT as u32;
+                }
+                ee.u64 = fd as u64;
+                if epoll_ctl(self.epfd, op, fd, &mut ee) == -1 {
+                    return Err(format!("ApiState.add_event: {}", *strerror(error())));
                 }
             }
             
             Ok(())
         }
 
-        pub fn del_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
-            let mut ke = kevent {
-                ident: fd as usize,
-                filter: EVFILT_READ,
-                flags: EV_DELETE,
-                fflags: 0,
-                data: 0,
-                udata: null_mut(),
-            };
-            if mask == Mask::Writable {
-                ke.filter = EVFILT_WRITE;
-            }
-            if mask == Mask::Readable || mask == Mask::Writable {
-                unsafe {
-                    if kevent(self.kqfd, &ke, 1, null_mut(), 0, null()) == -1 {
-                        return Err(format!("ApiState.del_event: {}", *strerror(error())));
-                    }
+        pub fn del_event(&self, fd: i32, mut old: Mask, mask: Mask) -> Result<(), String> {
+            let mut ee: epoll_event;
+            old.disable(mask);
+
+            unsafe {
+                ee = zeroed();
+                if old.is_readable() {
+                    ee.events |= EPOLLIN as u32;
+                }
+                if old.is_writable() {
+                    ee.events |= EPOLLOUT as u32;
+                }
+                ee.u64 = fd as u64;    // x86 is little endian
+                let ret_val = match old {
+                    Mask::None => {
+                        // Note, Kernel < 2.6.9 requires a non null event pointer even for
+                        // EPOLL_CTL_DEL.
+                        epoll_ctl(self.epfd, EPOLL_CTL_DEL, fd, &mut ee)
+                    },
+                    _ => {
+                        epoll_ctl(self.epfd, EPOLL_CTL_MOD, fd, &mut ee)
+                    },
+                };
+                if ret_val == -1 {
+                    return Err(format!("ApiState.del_event: {}", *strerror(error())));
                 }
             }
             
@@ -691,13 +705,12 @@ mod io_event {
         pub fn poll(&mut self, fired: &mut Vec<FiredEvent>, time_val_us: Option<u128>) -> i32 {
             let mut ret_val = 0;
             if let Some(tv_us) = time_val_us {
-                let timeout = timespec{ tv_sec: (tv_us / 1000_000u128) as i64, tv_nsec: ((tv_us % 1000_000u128) * 1000) as i64 };
                 unsafe {
-                    ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, &timeout);
+                    ret_val = epoll_wait(self.epfd, &mut self.events[0], SET_SIZE as i32, (tv_us / 1000) as i32);
                 }
             } else {
                 unsafe {
-                    ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, null());
+                    ret_val = epoll_wait(self.epfd, &mut self.events[0], SET_SIZE as i32, -1);
                 }
             }
 
@@ -709,14 +722,14 @@ mod io_event {
                     let mut mask = Mask::None;
                     let e = &self.events[j as usize];
 
-                    if e.filter == EVFILT_READ {
+                    if (e.events & EPOLLIN as u32) != 0 {
                         mask = mask | Mask::Readable;
                     }
-                    if e.filter == EVFILT_WRITE {
+                    if (e.events & EPOLLOUT as u32) != 0 {
                         mask = mask | Mask::Writable;
                     }
 
-                    fired[j as usize].fd = e.ident as i32;
+                    fired[j as usize].fd = e.u64 as i32;
                     fired[j as usize].mask = mask;
                 }
             }
@@ -725,7 +738,7 @@ mod io_event {
         }
 
         pub fn name() -> String {
-            "kqueue".to_string()
+            "epoll".to_string()
         }
     }
 
@@ -743,7 +756,7 @@ mod io_event {
         }
     }
 
-    fn api_create() -> Result<ApiState, String> {
+    pub fn api_create() -> Result<ApiState, String> {
         let mut epfd = -1;
         let mut err = String::new();
         unsafe {
