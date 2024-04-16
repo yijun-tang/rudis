@@ -2,8 +2,7 @@
 //! for the Jim's event-loop (Jim is a Tcl interpreter) but later translated
 //! it in form of a library for easy reuse.
 
-use std::{any::Any, mem::zeroed, ops::{BitAnd, BitOr, Deref}, sync::{Arc, RwLock}};
-use libc::{fd_set, timeval, FD_ISSET, FD_SET, FD_ZERO};
+use std::{any::Any, ops::{BitAnd, BitOr, Deref}, sync::{Arc, RwLock}};
 use crate::{redis::client::RedisClient, util::{add_ms_to_now, get_time_ms}};
 use self::io_event::{api_create, ApiState};
 
