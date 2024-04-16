@@ -512,7 +512,7 @@ mod io_event {
     }
 
     impl ApiState {
-        pub fn add_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
+        pub fn add_event(&self, fd: i32, _old: Mask, mask: Mask) -> Result<(), String> {
             let mut ke = kevent {
                 ident: fd as usize,
                 filter: EVFILT_READ,
@@ -535,7 +535,7 @@ mod io_event {
             Ok(())
         }
 
-        pub fn del_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
+        pub fn del_event(&self, fd: i32, _old: Mask, mask: Mask) -> Result<(), String> {
             let mut ke = kevent {
                 ident: fd as usize,
                 filter: EVFILT_READ,
