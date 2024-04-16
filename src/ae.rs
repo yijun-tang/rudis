@@ -351,7 +351,8 @@ impl EventLoop {
     /// writable/readable/exception
     #[cfg(target_os = "macos")]
     pub fn wait(fd: i32, mask: Mask, milliseconds: u128) -> Result<Mask, i32> {
-        use libc::select;
+        use std::mem::zeroed;
+        use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
 
         let mut timeout = timeval { tv_sec: (milliseconds / 1000) as i64, tv_usec: ((milliseconds % 1000) * 1000) as i32 };
         let mut ret_mask = Mask::None;
