@@ -168,10 +168,14 @@ impl RedisClient {
     }
 }
 
-struct WrappedClient(Arc<RwLock<RedisClient>>);
+pub struct WrappedClient(Arc<RwLock<RedisClient>>);
 
 impl WrappedClient {
-    fn process_input_buf(&mut self) {
+    pub fn inner(&self) -> Arc<RwLock<RedisClient>> {
+        self.0.clone()
+    }
+
+    fn process_input_buf(&self) {
         let mut c = self.0.write().unwrap();
         // Before to process the input buffer, make sure the client is not
         // waitig for a blocking operation such as BLPOP. Note that the first
@@ -185,7 +189,8 @@ impl WrappedClient {
         if c.bulk_len == -1 {
             if c.query_buf.contains("\n") {
                 // Read the first line of the query
-                let mut iter = c.query_buf.lines();
+                let query_buf_c = c.query_buf.clone();
+                let mut iter = query_buf_c.lines();
                 let query = iter.next().expect("first query doesn't exist");
                 let remaining: Vec<&str> = iter.collect();
                 c.query_buf = remaining.join("\r\n");
@@ -225,7 +230,8 @@ impl WrappedClient {
             // we are reading the bulk data that is actually the last
             // argument of the command.
             if c.bulk_len as usize <= c.query_buf.len() {
-                let mut iter = c.query_buf.lines();
+                let query_buf_c = c.query_buf.clone();
+                let mut iter = query_buf_c.lines();
                 let arg = iter.next().expect("last arg doesn't exist");
                 if arg.len() != c.bulk_len as usize {
                     server_read().log(LogLevel::Warning, &format!("arg '{}' isn't consistent with bulk len '{}'", arg, c.bulk_len));
@@ -258,7 +264,7 @@ impl WrappedClient {
     /// If 1 is returned the client is still alive and valid and
     /// and other operations can be performed by the caller. Otherwise
     /// if 0 is returned the client was destroied (i.e. after QUIT).
-    fn process_command(&mut self) -> bool {
+    fn process_command(&self) -> bool {
         // Free some memory if needed (maxmemory setting)
         {
             let mut server = server_write();
@@ -318,13 +324,13 @@ impl WrappedClient {
                     return true;
                 }
             } else {
-                c.mbargv.push(c.argv[0].clone());
-                c.argv.clear();
+                let bulk_arg = c.argv.pop().unwrap();
+                c.mbargv.push(bulk_arg);
                 c.multi_bulk -= 1;
                 if c.multi_bulk == 0 {
                     // Here we need to swap the multi-bulk argc/argv with the
                     // normal argc/argv of the client structure.
-                    (c.argv, c.mbargv) = (c.mbargv, c.argv);
+                    (c.argv, c.mbargv) = (c.mbargv.clone(), c.argv.clone());
 
                     // We need to set bulklen to something different than -1
                     // in order for the code below to process the command without
@@ -340,7 +346,8 @@ impl WrappedClient {
         }
         // -- end of multi bulk commands processing --
 
-        let name = c.argv[0].string().unwrap().string().unwrap();
+        let name_arg = c.argv[0].clone();
+        let name = name_arg.string().unwrap().string().unwrap();
         // The QUIT command is handled as a special case. Normal command
         // procs are unable to close the client connection safely
         if name.eq_ignore_ascii_case("quit") {
@@ -350,7 +357,7 @@ impl WrappedClient {
 
         // Now lookup the command and check ASAP about trivial error conditions
         // such wrong arity, bad command name and so forth.
-        let mut cmd = lookup_command(name);
+        let cmd = lookup_command(name);
         match cmd {
             None => {
                 self.add_reply_str(&format!("-ERR unknown command '{}'\r\n", name));
@@ -371,7 +378,8 @@ impl WrappedClient {
                     return true;
                 } else if cmd.flags().is_bulk() && c.bulk_len == -1 {
                     // This is a bulk command, we have to read the last argument yet.
-                    let bulk = c.argv.pop().unwrap().string().unwrap().string().unwrap();
+                    let last_arg = c.argv.pop().unwrap();
+                    let bulk = last_arg.string().unwrap().string().unwrap();
                     match bulk.parse() {
                         Ok(n) => { c.bulk_len = n; },
                         Err(e) => {
@@ -391,7 +399,8 @@ impl WrappedClient {
                     // It's a good idea since the code is small and this condition
                     // happens most of the times.
                     if c.query_buf.len() as i32 >= c.bulk_len {
-                        let mut iter = c.query_buf.lines();
+                        let query_buf_c = c.query_buf.clone();
+                        let mut iter = query_buf_c.lines();
                         let arg = iter.next().expect("bulk arg doesn't exist");
                         let remaining: Vec<&str> = iter.collect();
                         c.query_buf = remaining.join("\r\n");
@@ -424,7 +433,7 @@ impl WrappedClient {
                         // TODO
                 } else {
                     // TODO: vm
-                    call(c.borrow_mut(), cmd);
+                    call(self, cmd);
                 }
 
                 // Prepare the client for the next command
@@ -434,7 +443,7 @@ impl WrappedClient {
         };
     }
 
-    fn add_reply(&mut self, obj: RedisObject) {
+    fn add_reply(&self, obj: RedisObject) {
         let mut c = self.0.write().unwrap();
         if c.reply.is_empty() &&
             (c.repl_state == ReplState::None ||
@@ -449,7 +458,7 @@ impl WrappedClient {
         c.reply.push_back(Arc::new(obj.get_decoded()));
     }
 
-    fn add_reply_str(&mut self, s: &str) {
+    fn add_reply_str(&self, s: &str) {
         self.add_reply(RedisObject::String { ptr: StringStorageType::String(s.to_string()) });
     }
 }
@@ -458,8 +467,9 @@ fn send_reply_to_client(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLoc
     todo!()
 }
 
-fn read_query_from_client(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<RedisClient>>>, mask: Mask) {
-    let mut client = priv_data.unwrap().write().unwrap();
+fn read_query_from_client(_el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<RedisClient>>>, _mask: Mask) {
+    let priv_data_c = priv_data.clone().unwrap();
+    let mut client = priv_data_c.write().unwrap();
     let mut buf = [0u8; IO_BUF_LEN];
     let mut nread = 0isize;
 
@@ -493,6 +503,6 @@ fn read_query_from_client(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwL
         return;
     }
     if !client.flags.is_blocked() {
-        WrappedClient(priv_data.unwrap().clone()).process_input_buf();
+        WrappedClient(priv_data.unwrap()).process_input_buf();
     }
 }
