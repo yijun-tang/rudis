@@ -86,7 +86,6 @@ impl Display for LogLevel {
 }
 
 static LOG_WRITER: Lazy<RwLock<BufWriter<Box<dyn Write + Sync + Send>>>> = Lazy::new(|| {
-    println!("LOG WRITER initilized");
     let server = server_read();
     let mut _writer: Option<Box<dyn Write + Sync + Send>> = None;
 
@@ -111,9 +110,14 @@ pub fn log(level: LogLevel, body: &str) {
     }
 
     let log = format!("[{}] {} {}: {}\n", id(), timestamp().as_millis(), level, body);
-    match LOG_WRITER.write().unwrap().write_all(log.as_bytes()) {
+    let mut writer = LOG_WRITER.write().unwrap();
+    match writer.write_all(log.as_bytes()) {
         Ok(_) => {},
         Err(e) => { eprintln!("Can't write log: {}", e); },
+    }
+    match writer.flush() {
+        Err(e) => { eprintln!("failed to flush log: {e}"); },
+        Ok(_) => {},
     }
 }
 

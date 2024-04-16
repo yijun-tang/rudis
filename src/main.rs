@@ -36,5 +36,6 @@ fn main() {
 
     log(LogLevel::Notice, &format!("The server is now ready to accept connections on port {}", server_read().port()));
     server_write().set_before_sleep_proc(Some(Arc::new(before_sleep)));
-    server_write().main();
+    let el = server_write().el();
+    el.write().unwrap().main();
 }

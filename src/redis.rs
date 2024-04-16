@@ -229,6 +229,10 @@ impl RedisServer {
         &self.verbosity
     }
 
+    pub fn el(&self) -> Arc<RwLock<EventLoop>> {
+        self.el.clone()
+    }
+
     pub fn reset_server_save_params(&mut self) {
         self.save_params.clear();
     }
@@ -354,10 +358,6 @@ impl RedisServer {
         self.el.write().unwrap().set_before_sleep_proc(before_sleep);
     }
 
-    pub fn main(&mut self) {
-        self.el.write().unwrap().main();
-    }
-
     #[cfg(target_os = "linux")]
     pub fn linux_overcommit_memory_warning(&self) {
         if self.linux_overcommit_memory_value() == 0 {
@@ -400,7 +400,7 @@ impl RedisServer {
 /// main loop of the event driven library, that is, before to sleep
 /// for ready file descriptors.
 pub fn before_sleep(el: &mut EventLoop) {
-    println!("before_sleep");
+    log(LogLevel::Verbose, "before_sleep");
 }
 
 fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) -> i32 {
@@ -409,7 +409,7 @@ fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Arc<dyn Any + S
     // in objects at every object access, and accuracy is not needed.
     // To access a global var is faster than calling time(NULL)
 
-    println!("server cron time event");
+    log(LogLevel::Verbose, "server cron time event");
     1000
 }
 

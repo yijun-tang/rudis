@@ -7,14 +7,14 @@ impl RedisServer {
     /// I agree, this is a very rudimental way to load a configuration...
     /// will improve later if the config gets more complex
     pub fn load_server_config(&mut self, filename: &str) {
-        let mut reader: Option<Box<dyn Read>> = None;
+        let mut _reader: Option<Box<dyn Read>> = None;
         let mut line_num = 0;
 
         if filename.eq("-") {
-            reader = Some(Box::new(io::stdin()));
+            _reader = Some(Box::new(io::stdin()));
         } else {
             if let Ok(f) = File::open(filename) {
-                reader = Some(Box::new(f));
+                _reader = Some(Box::new(f));
             } else {
                 log(LogLevel::Warning, "Fatal error, can't open config file");
                 exit(1);
@@ -29,7 +29,7 @@ impl RedisServer {
             exit(1);
         };
         
-        let buf_reader = BufReader::new(reader.unwrap());
+        let buf_reader = BufReader::new(_reader.unwrap());
         for line in buf_reader.lines() {
             if let Ok(line) = line {
                 line_num += 1;
