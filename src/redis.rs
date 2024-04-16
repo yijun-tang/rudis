@@ -373,7 +373,7 @@ impl RedisServer {
         let mut buf = String::new();
         match BufReader::new(reader.unwrap()).read_line(&mut buf) {
             Ok(_) => {
-                match buf.parse() {
+                match buf.trim().parse() {
                     Ok(r) => r,
                     Err(e) => {
                         self.log(LogLevel::Warning, &format!("Parsing '{}' as i32 failed: {}", buf, e));
