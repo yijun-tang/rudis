@@ -1,6 +1,6 @@
 use std::{borrow::BorrowMut, collections::LinkedList, ops::Deref, sync::{Arc, RwLock}};
 use libc::{c_void, read, strerror, EAGAIN};
-use crate::{ae::{EventLoop, Mask}, anet::{nonblock, tcp_no_delay}, redis::{cmd::{discard_command, exec_command, lookup_command}, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
+use crate::{ae::{el::el_write, EventLoop, Mask}, anet::{nonblock, tcp_no_delay}, redis::{cmd::{discard_command, exec_command, lookup_command}, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
 use super::{cmd::{call, RedisCommand, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType}, RedisDB, ReplState};
 
 pub struct ClientFlags(u8);
@@ -88,7 +88,7 @@ impl RedisClient {
         self.fd
     }
 
-    pub fn create(fd: i32) -> Result<Arc<RwLock<RedisClient>>, String> {
+    pub fn create(el: &mut EventLoop, fd: i32) -> Result<Arc<RwLock<RedisClient>>, String> {
         match nonblock(fd) {
             Ok(_) => {},
             Err(e) => { return Err(e); },
@@ -117,7 +117,7 @@ impl RedisClient {
         };
         c.select_db(0);
         let c = Arc::new(RwLock::new(c));
-        server_read().el.write().unwrap().borrow_mut().create_file_event(fd, Mask::Readable, Arc::new(read_query_from_client), Some(c.clone()))?;
+        el.create_file_event(fd, Mask::Readable, Arc::new(read_query_from_client), Some(c.clone()))?;
         server_write().clients.push_back(c.clone());
         Ok(c)
     }
@@ -451,7 +451,7 @@ impl WrappedClient {
         if c.reply.is_empty() &&
             (c.repl_state == ReplState::None ||
              c.repl_state == ReplState::Online) &&
-            server_write().el.write().unwrap().create_file_event(c.fd, Mask::Writable, 
+            el_write().create_file_event(c.fd, Mask::Writable, 
                 Arc::new(send_reply_to_client), Some(self.0.clone())).is_err() {
             return;
         }
@@ -471,6 +471,7 @@ fn send_reply_to_client(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLoc
 }
 
 fn read_query_from_client(_el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<RedisClient>>>, _mask: Mask) {
+    log(LogLevel::Verbose, "read_query_from_client entered");
     let priv_data_c = priv_data.clone().unwrap();
     let mut client = priv_data_c.write().unwrap();
     let mut buf = [0u8; IO_BUF_LEN];
@@ -506,6 +507,8 @@ fn read_query_from_client(_el: &mut EventLoop, fd: i32, priv_data: Option<Arc<Rw
         return;
     }
     if !client.flags.is_blocked() {
+        log(LogLevel::Verbose, "read_query_from_client processing");
         WrappedClient(priv_data.unwrap()).process_input_buf();
     }
+    log(LogLevel::Verbose, "read_query_from_client left");
 }

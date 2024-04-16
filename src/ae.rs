@@ -3,8 +3,11 @@
 //! it in form of a library for easy reuse.
 
 use std::{any::Any, ops::{BitAnd, BitOr, Deref}, sync::{Arc, RwLock}};
-use crate::{redis::client::RedisClient, util::{add_ms_to_now, get_time_ms}};
+use crate::{redis::client::RedisClient, util::{add_ms_to_now, get_time_ms, log, LogLevel}};
 use self::io_event::{api_create, ApiState};
+
+pub mod el;
+pub mod handler;
 
 const SET_SIZE: usize = 1024 * 10;    // Max number of fd supported
 
@@ -105,6 +108,7 @@ impl BitOr for Mask {
     }
 }
 
+#[derive(Clone)]
 pub struct FileEvent {
     mask: Mask,
     r_file_proc: FileProc,
@@ -165,6 +169,7 @@ impl EventLoop {
 
     pub fn create_file_event(&mut self, fd: i32, mask: Mask, proc: FileProc, 
         client_data: Option<Arc<RwLock<RedisClient>>>) -> Result<(), String> {
+
         if fd >= SET_SIZE as i32 {
             return Err(format!("fd should be less than {}", SET_SIZE));
         }
@@ -288,7 +293,7 @@ impl EventLoop {
         // to fire. 
         if self.max_fd != -1 || (flags.contains_time_event() && flags.is_waiting()) {
             let mut shortest: Option<Arc<RwLock<TimeEvent>>> = None;
-            let mut time_val_us: Option<u128> = None;
+            let mut _time_val_us: Option<u128> = None;
 
             if flags.contains_time_event() && flags.is_waiting() {
                 shortest = self.search_nearest_timer();
@@ -298,28 +303,28 @@ impl EventLoop {
                 // timer to fire.
                 let now_ms = get_time_ms();
                 if shrtest.deref().read().unwrap().when_ms < now_ms {
-                    time_val_us = Some(0);
+                    _time_val_us = Some(0);
                 } else {
-                    time_val_us = Some((shrtest.deref().read().unwrap().when_ms - now_ms) * 1000);
+                    _time_val_us = Some((shrtest.deref().read().unwrap().when_ms - now_ms) * 1000);
                 }
             } else {
                 // If we have to check for events but need to return
                 // ASAP because of AE_DONT_WAIT we need to set the timeout
                 // to zero
                 if !flags.is_waiting() {
-                    time_val_us = Some(0);
+                    _time_val_us = Some(0);
                 } else {
                     // Otherwise we can block
                     // wait forever
-                    time_val_us = None;
+                    _time_val_us = None;
                 }
             }
 
-            let num_events = self.api_data.write().unwrap().poll(&mut self.fired, time_val_us);
+            let num_events = self.api_data.write().unwrap().poll(&mut self.fired, _time_val_us);
             for j in 0..num_events {
                 let fd = self.fired[j as usize].fd;
                 let mask = self.fired[j as usize].mask;
-                let fe = &self.events[fd as usize];
+                let fe = self.events[fd as usize].clone();
                 let mut rfired = false;
 
                 // note the fe->mask & mask & ... code: maybe an already processed
@@ -328,7 +333,7 @@ impl EventLoop {
                 if fe.mask.is_readable() && mask.is_readable() {
                     rfired = true;
                     let f = fe.r_file_proc.clone();
-                    // f(self, fd, fe.client_data.clone(), mask);
+                    f(self, fd, fe.client_data.clone(), mask);
                 }
                 if fe.mask.is_writable() && mask.is_writable() {
                     if !rfired || !Arc::ptr_eq(&fe.r_file_proc, &fe.w_file_proc) {

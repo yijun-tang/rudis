@@ -1,3 +1,5 @@
+#![feature(ip_bits)]
+
 pub mod adlist;
 pub mod ae;
 pub mod anet;

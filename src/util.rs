@@ -1,6 +1,6 @@
 use std::{fmt::Display, fs::OpenOptions, io::{self, BufWriter, Write}, process::{abort, exit, id}, sync::RwLock, thread::sleep, time::{Duration, SystemTime, UNIX_EPOCH}};
 use once_cell::sync::Lazy;
-use crate::redis::server_read;
+use crate::redis::{server_read, SERVER};
 
 pub fn timestamp() -> Duration {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
@@ -40,6 +40,7 @@ pub fn error() -> i32 {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum LogLevel {
     Debug,
     Verbose,
@@ -102,10 +103,11 @@ static LOG_WRITER: Lazy<RwLock<BufWriter<Box<dyn Write + Sync + Send>>>> = Lazy:
 
     RwLock::new(BufWriter::new(_writer.unwrap()))
 });
+static LOG_LEVEL: Lazy<LogLevel> = Lazy::new(|| { *server_read().verbosity() });
 
 /// TODO: more convinent macro
 pub fn log(level: LogLevel, body: &str) {
-    if level.less(server_read().verbosity()) {
+    if level.less(&LOG_LEVEL) {
         return;
     }
 

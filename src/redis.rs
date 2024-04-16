@@ -1,7 +1,7 @@
 use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, io::Write, process::exit, ptr::null_mut, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
 use libc::{c_void, close, dup2, fclose, fopen, fork, fprintf, getpid, off_t, open, pid_t, setsid, signal, write, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use once_cell::sync::Lazy;
-use crate::{ae::{BeforeSleepProc, EventLoop, Mask}, anet::{accept, tcp_server}, util::{log, oom, timestamp, LogLevel}};
+use crate::{ae::{el::el_write, handler::{accept_handler, server_cron}, BeforeSleepProc, EventLoop, Mask}, anet::{accept, tcp_server}, util::{log, oom, timestamp, LogLevel}, zmalloc::used_memory};
 use self::{client::RedisClient, signal::setup_sig_segv_action};
 
 pub mod config;
@@ -67,6 +67,16 @@ pub struct RedisDB {
     id: i32,
 }
 
+impl RedisDB {
+    pub fn dict(&self) -> &HashMap<String, String> {
+        &self.dict
+    }
+
+    pub fn expires(&self) -> &HashMap<String, String> {
+        &self.expires
+    }
+}
+
 pub struct RedisServer {
     port: u16,
     fd: i32,
@@ -75,9 +85,8 @@ pub struct RedisServer {
     sharing_pool_size: u32,
     dirty: u128,                                // changes to DB from the last save
     clients: LinkedList<Arc<RwLock<RedisClient>>>,
-    slaves: LinkedList<RedisClient>,
+    slaves: LinkedList<Arc<RwLock<RedisClient>>>,
     monitors: LinkedList<RedisClient>,
-    el: Arc<RwLock<EventLoop>>,
     cron_loops: i32,                                            // number of times the cron function run
     obj_free_list: LinkedList<Arc<dyn Any + Sync + Send>>,      // A list of freed objects to avoid malloc()
     last_save: u64,                                             // Unix time of last save succeeded (in seconds)
@@ -139,17 +148,18 @@ pub struct RedisServer {
     vm_max_threads: i32,                            // Max number of I/O threads running at the same time
 
     devnull: Option<Arc<dyn Write + Sync + Send>>,
-}
+
+    // Virtual memory I/O threads stuff
+    // An I/O thread process an element taken from the io_jobs queue and
+    // put the result of the operation in the io_done list. While the
+    // job is being processed, it's put on io_processing queue.
+
+    io_ready_clients: LinkedList<Arc<RwLock<RedisClient>>>,     // Clients ready to be unblocked. All keys loaded
+}   
+
 
 impl RedisServer {
     pub fn new() -> RedisServer {
-        let el = match EventLoop::create() {
-            Ok(el) => { Arc::new(RwLock::new(el)) },
-            Err(e) => {
-                eprintln!("Can't create event loop: {}", e);
-                exit(1);
-            },
-        };
         let save_params = vec![
             SaveParam { seconds: 60 * 60, changes: 1 },             // save after 1 hour and 1 change
             SaveParam { seconds: 300, changes: 100 },               // save after 5 minutes and 100 changes
@@ -164,7 +174,6 @@ impl RedisServer {
             clients: LinkedList::new(),
             slaves: LinkedList::new(),
             monitors: LinkedList::new(),
-            el,
             cron_loops: 0,
             obj_free_list: LinkedList::new(),
             last_save: timestamp().as_secs(),
@@ -218,6 +227,7 @@ impl RedisServer {
             repl_state: ReplState::None,
             devnull: None,
             
+            io_ready_clients: LinkedList::new(),
         }
     }
 
@@ -229,8 +239,60 @@ impl RedisServer {
         &self.verbosity
     }
 
-    pub fn el(&self) -> Arc<RwLock<EventLoop>> {
-        self.el.clone()
+    pub fn vm_enabled(&self) -> bool {
+        self.vm_enabled
+    }
+
+    pub fn cron_loops(&self) -> i32 {
+        self.cron_loops
+    }
+
+    pub fn set_cron_loops(&mut self, c: i32) {
+        self.cron_loops = c;
+    }
+
+    pub fn set_unix_time(&mut self, t: u64) {
+        self.unix_time = t;
+    }
+
+    pub fn dbnum(&self) -> i32 {
+        self.dbnum
+    }
+
+    pub fn dbs(&self) -> &Vec<Arc<RedisDB>> {
+        &self.dbs
+    }
+
+    pub fn bg_save_child_pid(&self) -> i32 {
+        self.bg_save_child_pid
+    }
+
+    pub fn io_ready_clients(&self) -> &LinkedList<Arc<RwLock<RedisClient>>> {
+        &self.io_ready_clients
+    }
+
+    pub fn clients(&self) -> &LinkedList<Arc<RwLock<RedisClient>>> {
+        &self.clients
+    }
+
+    pub fn max_clients(&self) -> u32 {
+        self.max_clients
+    }
+
+    pub fn stat_numconnections(&self) -> u128 {
+        self.stat_numconnections
+    }
+
+    pub fn set_stat_numconnections(&mut self, s: u128) {
+        self.stat_numconnections = s;
+    }
+
+    pub fn slaves(&self) -> &LinkedList<Arc<RwLock<RedisClient>>> {
+        &self.slaves
+    }
+
+    pub fn sharing_pool(&self) -> &HashMap<String, String> {
+        &self.sharing_pool
     }
 
     pub fn reset_server_save_params(&mut self) {
@@ -296,8 +358,8 @@ impl RedisServer {
             self.dbs.push(Arc::new(RedisDB { dict: HashMap::new(), expires: HashMap::new(), blocking_keys: HashMap::new(), io_keys, id: i }));
         }
 
-        self.el.write().unwrap().create_time_event(1, Arc::new(server_cron), None, None);
-        match self.el.write().unwrap().create_file_event(self.fd, Mask::Readable, Arc::new(accept_handler), None) {
+        el_write().create_time_event(1, Arc::new(server_cron), None, None);
+        match el_write().create_file_event(self.fd, Mask::Readable, Arc::new(accept_handler), None) {
             Ok(_) => {},
             Err(e) => { oom(&e); },    // TODO: is it appropriate to call oom?
         }
@@ -354,10 +416,6 @@ impl RedisServer {
         self.port
     }
 
-    pub fn set_before_sleep_proc(&mut self, before_sleep: Option<BeforeSleepProc>) {
-        self.el.write().unwrap().set_before_sleep_proc(before_sleep);
-    }
-
     #[cfg(target_os = "linux")]
     pub fn linux_overcommit_memory_warning(&self) {
         if self.linux_overcommit_memory_value() == 0 {
@@ -393,58 +451,6 @@ impl RedisServer {
                 -1
             },
         }
-    }
-}
-
-/// This function gets called every time Redis is entering the
-/// main loop of the event driven library, that is, before to sleep
-/// for ready file descriptors.
-pub fn before_sleep(el: &mut EventLoop) {
-    log(LogLevel::Verbose, "before_sleep");
-}
-
-fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) -> i32 {
-    // We take a cached value of the unix time in the global state because
-    // with virtual memory and aging there is to store the current time
-    // in objects at every object access, and accuracy is not needed.
-    // To access a global var is faster than calling time(NULL)
-
-    log(LogLevel::Verbose, "server cron time event");
-    1000
-}
-
-fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<RedisClient>>>, mask: Mask) {
-    let (c_fd, c_ip, c_port) = match accept(fd) {
-        Ok((c_fd, c_ip, c_port)) => { (c_fd, c_ip, c_port) },
-        Err(e) => {
-            log(LogLevel::Warning, &format!("Accepting client connection: {}", e));
-            return;
-        },
-    };
-    log(LogLevel::Verbose, &format!("Accepted {c_ip}:{c_port}"));
-    match RedisClient::create(c_fd) {
-        Ok(client) => {
-            // If maxclient directive is set and this is one client more... close the
-            // connection. Note that we create the client instead to check before
-            // for this condition, since now the socket is already set in nonblocking
-            // mode and we can send an error for free using the Kernel I/O
-            if server_read().max_clients > 0 && server_read().clients.len() as u32 > server_read().max_clients {
-                let err = "-ERR max number of clients reached\r\n";
-                unsafe {
-                    // That's a best effort error message, don't check write errors
-                    if write(client.read().unwrap().fd(), err as *const _ as *const c_void, err.len()) == -1 {
-                    }
-                }
-                // TODO: free client?
-                return;
-            }
-            server_write().stat_numconnections += 1;
-        },
-        Err(e) => {
-            log(LogLevel::Warning, &format!("Error allocating resoures for the client: {}", e));
-            unsafe { close(c_fd); } // May be already closed, just ingore errors
-            return;
-        },
     }
 }
 

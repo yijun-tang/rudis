@@ -1,7 +1,7 @@
 //! Basic TCP socket stuff made a bit less boring.
 
 use std::{mem::{size_of, size_of_val, zeroed}, net::{IpAddr, Ipv4Addr}};
-use libc::{bind, c_void, close, fcntl, listen, setsockopt, sockaddr, sockaddr_in, socket, strerror, AF_INET, EINTR, F_GETFL, F_SETFL, INADDR_ANY, IPPROTO_TCP, O_NONBLOCK, SOCK_STREAM, SOL_SOCKET, SO_KEEPALIVE, SO_REUSEADDR, TCP_NODELAY};
+use libc::{bind, c_void, close, fcntl, listen, setsockopt, sockaddr, sockaddr_in, socket, strerror, AF_INET, EAGAIN, EINTR, F_GETFL, F_SETFL, INADDR_ANY, IPPROTO_TCP, O_NONBLOCK, SOCK_STREAM, SOL_SOCKET, SO_KEEPALIVE, SO_REUSEADDR, TCP_NODELAY};
 
 use crate::util::error;
 
