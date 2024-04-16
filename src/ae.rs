@@ -629,11 +629,8 @@ mod io_event {
 #[cfg(target_os = "linux")]
 mod io_event {
     use std::mem::zeroed;
-
     use libc::{close, epoll_create, epoll_ctl, epoll_event, epoll_wait, strerror, EPOLLIN, EPOLLOUT, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD};
-
     use crate::util::error;
-
     use super::{FiredEvent, Mask, SET_SIZE};
 
 
