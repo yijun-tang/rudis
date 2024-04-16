@@ -1,4 +1,6 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{fmt::Display, fs::OpenOptions, io::{self, BufWriter, Write}, process::{abort, exit, id}, sync::RwLock, thread::sleep, time::{Duration, SystemTime, UNIX_EPOCH}};
+use once_cell::sync::Lazy;
+use crate::redis::server_read;
 
 pub fn timestamp() -> Duration {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
@@ -35,5 +37,110 @@ pub fn error() -> i32 {
 
     unsafe {
         *__error()
+    }
+}
+
+pub enum LogLevel {
+    Debug,
+    Verbose,
+    Notice,
+    Warning,
+}
+
+impl LogLevel {
+    fn less(&self, rhs: &Self) -> bool {
+        match self {
+            Self::Debug => {
+                match rhs {
+                    Self::Debug => false,
+                    _ => true,
+                }
+            },
+            Self::Verbose => {
+                match rhs {
+                    Self::Debug | Self::Verbose => false,
+                    _ => true,
+                }
+            },
+            Self::Notice => {
+                match rhs {
+                    Self::Warning => true,
+                    _ => false,
+                }
+            },
+            Self::Warning => false,
+        }
+    }
+}
+
+impl Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ch = match self {
+            Self::Debug => '.',
+            Self::Verbose => '-',
+            Self::Notice => '*',
+            Self::Warning => '#',
+        };
+        write!(f, "{ch}")
+    }
+}
+
+static LOG_WRITER: Lazy<RwLock<BufWriter<Box<dyn Write + Sync + Send>>>> = Lazy::new(|| {
+    println!("LOG WRITER initilized");
+    let server = server_read();
+    let mut _writer: Option<Box<dyn Write + Sync + Send>> = None;
+
+    if server.log_file().is_empty() {
+        _writer = Some(Box::new(io::stdout()));
+    } else {
+        if let Ok(f) = OpenOptions::new().append(true).open(&server.log_file()) {
+            _writer = Some(Box::new(f));
+        } else {
+            eprintln!("Can't open log file: {}", server.log_file());
+            exit(1);
+        }
+    }
+
+    RwLock::new(BufWriter::new(_writer.unwrap()))
+});
+
+/// TODO: more convinent macro
+pub fn log(level: LogLevel, body: &str) {
+    if level.less(server_read().verbosity()) {
+        return;
+    }
+
+    let log = format!("[{}] {} {}: {}\n", id(), timestamp().as_millis(), level, body);
+    match LOG_WRITER.write().unwrap().write_all(log.as_bytes()) {
+        Ok(_) => {},
+        Err(e) => { eprintln!("Can't write log: {}", e); },
+    }
+}
+
+/// Redis generally does not try to recover from out of memory conditions
+/// when allocating objects or strings, it is not clear if it will be possible
+/// to report this condition to the client since the networking layer itself
+/// is based on heap allocation for send buffers, so we simply abort.
+/// At least the code will be simpler to read...
+pub fn oom(msg: &str) {
+    log(LogLevel::Warning, &format!("{}: Out of memory\n", msg));
+    sleep(Duration::from_secs(1));
+    abort();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_level_test() {
+        assert_eq!(format!("{}", LogLevel::Debug), ".");
+        assert!(LogLevel::Debug.less(&LogLevel::Notice));
+    }
+
+    #[test]
+    fn log_print_test() {
+        log(LogLevel::Notice, &format!("hello {}", "redis"));
+        log(LogLevel::Debug, &format!("hello {}", "redis"));
     }
 }

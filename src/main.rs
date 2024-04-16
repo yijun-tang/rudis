@@ -1,5 +1,5 @@
 use std::{env, process::exit, sync::Arc, time::Instant};
-use rredis::redis::{before_sleep, log::LogLevel, server_read, server_write, REDIS_VERSION, SERVER};
+use rredis::{redis::{before_sleep, server_read, server_write, REDIS_VERSION}, util::{log, LogLevel}};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -11,14 +11,14 @@ fn main() {
         eprintln!("Usage: ./redis-server [/path/to/redis.conf]");
         exit(1);
     } else {
-        server_read().log(LogLevel::Warning, "Warning: no config file specified, using the default config. In order to specify a config file use 'redis-server /path/to/redis.conf'");
+        log(LogLevel::Warning, "Warning: no config file specified, using the default config. In order to specify a config file use 'redis-server /path/to/redis.conf'");
     }
     if server_read().is_daemonize() {
         server_read().daemonize();
     }
 
     server_write().init_server();
-    server_read().log(LogLevel::Notice, &format!("Server started, Redis version {}", REDIS_VERSION));
+    log(LogLevel::Notice, &format!("Server started, Redis version {}", REDIS_VERSION));
 
     #[cfg(target_os = "linux")]
     server_read().linux_overcommit_memory_warning();
@@ -34,7 +34,7 @@ fn main() {
         }
     } */
 
-    server_read().log(LogLevel::Notice, &format!("The server is now ready to accept connections on port {}", server_read().port()));
+    log(LogLevel::Notice, &format!("The server is now ready to accept connections on port {}", server_read().port()));
     server_write().set_before_sleep_proc(Some(Arc::new(before_sleep)));
     server_write().main();
 }

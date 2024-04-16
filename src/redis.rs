@@ -1,11 +1,10 @@
 use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, io::Write, process::exit, ptr::null_mut, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
-use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, off_t, open, pid_t, setsid, signal, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
+use libc::{c_void, close, dup2, fclose, fopen, fork, fprintf, getpid, off_t, open, pid_t, setsid, signal, write, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use once_cell::sync::Lazy;
-use crate::{ae::{BeforeSleepProc, EventLoop, Mask}, anet::{accept, tcp_server}, util::timestamp};
-use self::{client::RedisClient, log::LogLevel, signal::setup_sig_segv_action};
+use crate::{ae::{BeforeSleepProc, EventLoop, Mask}, anet::{accept, tcp_server}, util::{log, oom, timestamp, LogLevel}};
+use self::{client::RedisClient, signal::setup_sig_segv_action};
 
 pub mod config;
-pub mod log;
 pub mod signal;
 pub mod vm;
 pub mod aof;
@@ -222,13 +221,21 @@ impl RedisServer {
         }
     }
 
+    pub fn log_file(&self) -> &str {
+        &self.log_file
+    }
+
+    pub fn verbosity(&self) -> &LogLevel {
+        &self.verbosity
+    }
+
     pub fn reset_server_save_params(&mut self) {
         self.save_params.clear();
     }
 
     pub fn daemonize(&self) {
-        let mut fd = -1;
-        let mut fp: *mut FILE = null_mut();
+        let mut _fd = -1;
+        let mut _fp: *mut FILE = null_mut();
         unsafe {
             if fork() != 0 { exit(0); }     // parent exits
             setsid();                               // create a new session
@@ -236,19 +243,19 @@ impl RedisServer {
             // Every output goes to /dev/null. If Redis is daemonized but
             // the 'logfile' is set to 'stdout' in the configuration file
             // it will not log at all.
-            fd = open("/dev/null".as_ptr() as *const i8, O_RDWR, 0);
-            if fd != -1 {
-                dup2(fd, STDIN_FILENO);
-                dup2(fd, STDOUT_FILENO);
-                dup2(fd, STDERR_FILENO);
-                if fd > STDERR_FILENO { close(fd); }
+            _fd = open("/dev/null".as_ptr() as *const i8, O_RDWR, 0);
+            if _fd != -1 {
+                dup2(_fd, STDIN_FILENO);
+                dup2(_fd, STDOUT_FILENO);
+                dup2(_fd, STDERR_FILENO);
+                if _fd > STDERR_FILENO { close(_fd); }
             }
     
             // Try to write the pid file
-            fp = fopen(self.pid_file.as_ptr() as *const i8, "w".as_ptr() as *const i8);
-            if !fp.is_null() {
-                fprintf(fp, "%d\n".as_ptr() as *const i8, getpid());
-                fclose(fp);
+            _fp = fopen(self.pid_file.as_ptr() as *const i8, "w".as_ptr() as *const i8);
+            if !_fp.is_null() {
+                fprintf(_fp, "%d\n".as_ptr() as *const i8, getpid());
+                fclose(_fp);
             }
         }
     }
@@ -264,7 +271,7 @@ impl RedisServer {
         match OpenOptions::new().write(true).open("/dev/null") {
             Ok(f) => { self.devnull = Some(Arc::new(f)); },
             Err(e) => {
-                self.log(LogLevel::Warning, &format!("Can't open /dev/null: {}", e));
+                log(LogLevel::Warning, &format!("Can't open /dev/null: {}", e));
                 exit(1);
             },
         }
@@ -272,7 +279,7 @@ impl RedisServer {
         match tcp_server(self.port, &self.bind_addr) {
             Ok(fd) => { self.fd = fd; },
             Err(e) => {
-                self.log(LogLevel::Warning, &format!("Opening TCP port: {}", e));
+                log(LogLevel::Warning, &format!("Opening TCP port: {}", e));
                 exit(1);
             },
         }
@@ -288,7 +295,7 @@ impl RedisServer {
         self.el.write().unwrap().create_time_event(1, Arc::new(server_cron), None, None);
         match self.el.write().unwrap().create_file_event(self.fd, Mask::Readable, Arc::new(accept_handler), None) {
             Ok(_) => {},
-            Err(e) => { self.oom(&e); },    // TODO: is it appropriate to call oom?
+            Err(e) => { oom(&e); },    // TODO: is it appropriate to call oom?
         }
 
         /* if self.append_only {
@@ -316,7 +323,7 @@ impl RedisServer {
     /// memory usage.
     pub fn free_memory_if_needed(&mut self) {
         // TODO
-        self.log(LogLevel::Warning, "free memory if needed!!!");
+        log(LogLevel::Warning, "free memory if needed!!!");
     }
 
     fn append_server_save_params(&mut self, seconds: u128, changes: i32) {
@@ -354,7 +361,7 @@ impl RedisServer {
     #[cfg(target_os = "linux")]
     pub fn linux_overcommit_memory_warning(&self) {
         if self.linux_overcommit_memory_value() == 0 {
-            self.log(LogLevel::Warning, "WARNING overcommit_memory is set to 0! Background save may fail under low condition memory. To fix this issue add 'vm.overcommit_memory = 1' to /etc/sysctl.conf and then reboot or run the command 'sysctl vm.overcommit_memory=1' for this to take effect.");
+            log(LogLevel::Warning, "WARNING overcommit_memory is set to 0! Background save may fail under low condition memory. To fix this issue add 'vm.overcommit_memory = 1' to /etc/sysctl.conf and then reboot or run the command 'sysctl vm.overcommit_memory=1' for this to take effect.");
         }
     }
 
@@ -362,27 +369,27 @@ impl RedisServer {
     fn linux_overcommit_memory_value(&self) -> i32 {
         use std::io::{BufRead, BufReader, Read};
 
-        let mut reader: Option<Box<dyn Read>> = None;
+        let mut _reader: Option<Box<dyn Read>> = None;
         match OpenOptions::new().read(true).open("/proc/sys/vm/overcommit_memory") {
-            Ok(f) => { reader = Some(Box::new(f)); },
+            Ok(f) => { _reader = Some(Box::new(f)); },
             Err(e) => {
-                self.log(LogLevel::Warning, &format!("Can't open '/proc/sys/vm/overcommit_memory' file: {}", e));
+                log(LogLevel::Warning, &format!("Can't open '/proc/sys/vm/overcommit_memory' file: {}", e));
                 return -1;
             },
         }
         let mut buf = String::new();
-        match BufReader::new(reader.unwrap()).read_line(&mut buf) {
+        match BufReader::new(_reader.unwrap()).read_line(&mut buf) {
             Ok(_) => {
                 match buf.trim().parse() {
                     Ok(r) => r,
                     Err(e) => {
-                        self.log(LogLevel::Warning, &format!("Parsing '{}' as i32 failed: {}", buf, e));
+                        log(LogLevel::Warning, &format!("Parsing '{}' as i32 failed: {}", buf, e));
                         -1
                     },
                 }
             },
             Err(e) => {
-                self.log(LogLevel::Warning, &format!("Reading '/proc/sys/vm/overcommit_memory' file failed: {}", e));
+                log(LogLevel::Warning, &format!("Reading '/proc/sys/vm/overcommit_memory' file failed: {}", e));
                 -1
             },
         }
@@ -410,21 +417,40 @@ fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<Redi
     let (c_fd, c_ip, c_port) = match accept(fd) {
         Ok((c_fd, c_ip, c_port)) => { (c_fd, c_ip, c_port) },
         Err(e) => {
-            server_read().log(LogLevel::Warning, &format!("Accepting client connection: {}", e));
+            log(LogLevel::Warning, &format!("Accepting client connection: {}", e));
             return;
         },
     };
-    server_read().log(LogLevel::Verbose, &format!("Accepted {c_ip}:{c_port}"));
-
-
-    todo!()
+    log(LogLevel::Verbose, &format!("Accepted {c_ip}:{c_port}"));
+    match RedisClient::create(c_fd) {
+        Ok(client) => {
+            // If maxclient directive is set and this is one client more... close the
+            // connection. Note that we create the client instead to check before
+            // for this condition, since now the socket is already set in nonblocking
+            // mode and we can send an error for free using the Kernel I/O
+            if server_read().max_clients > 0 && server_read().clients.len() as u32 > server_read().max_clients {
+                let err = "-ERR max number of clients reached\r\n";
+                unsafe {
+                    // That's a best effort error message, don't check write errors
+                    if write(client.read().unwrap().fd(), err as *const _ as *const c_void, err.len()) == -1 {
+                    }
+                }
+                // TODO: free client?
+                return;
+            }
+            server_write().stat_numconnections += 1;
+        },
+        Err(e) => {
+            log(LogLevel::Warning, &format!("Error allocating resoures for the client: {}", e));
+            unsafe { close(c_fd); } // May be already closed, just ingore errors
+            return;
+        },
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead, Cursor};
-
-    use super::*;
 
     #[test]
     fn char_test() {

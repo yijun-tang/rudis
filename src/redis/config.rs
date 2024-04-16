@@ -1,7 +1,7 @@
 use std::{fs::{File, OpenOptions}, io::{self, BufRead, BufReader, Read}, process::exit};
 use libc::{chdir, strerror};
-use crate::util::{error, yes_no_to_bool};
-use super::{log::LogLevel, AppendFsync, RedisServer, ReplState};
+use crate::util::{error, log, yes_no_to_bool, LogLevel};
+use super::{AppendFsync, RedisServer, ReplState};
 
 impl RedisServer {
     /// I agree, this is a very rudimental way to load a configuration...
@@ -16,7 +16,7 @@ impl RedisServer {
             if let Ok(f) = File::open(filename) {
                 reader = Some(Box::new(f));
             } else {
-                self.log(LogLevel::Warning, "Fatal error, can't open config file");
+                log(LogLevel::Warning, "Fatal error, can't open config file");
                 exit(1);
             }
         }
@@ -93,7 +93,7 @@ impl RedisServer {
                             ret
                         };
                         if ret_val == -1 {
-                            self.log(LogLevel::Warning, &format!("Can't chdir to '{}': {}", argv[1], err));
+                            log(LogLevel::Warning, &format!("Can't chdir to '{}': {}", argv[1], err));
                             exit(1);
                         }
                     },

@@ -1,7 +1,5 @@
 use std::{fs::OpenOptions, io::Read};
-
-use crate::redis::log::LogLevel;
-
+use crate::util::{log, LogLevel};
 use super::RedisServer;
 
 impl RedisServer {
@@ -10,7 +8,7 @@ impl RedisServer {
         match OpenOptions::new().read(true).open(&self.db_filename) {
             Ok(f) => {},
             Err(e) => {
-                self.log(LogLevel::Warning, &format!("Fatal error: can't open the rdb file for reading: {}", e));
+                log(LogLevel::Warning, &format!("Fatal error: can't open the rdb file for reading: {}", e));
                 return Err(e.to_string());
             },
         }

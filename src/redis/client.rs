@@ -1,7 +1,6 @@
 use std::{borrow::BorrowMut, collections::LinkedList, ops::Deref, sync::{Arc, RwLock}};
 use libc::{c_void, read, strerror, EAGAIN};
-
-use crate::{ae::{EventLoop, Mask}, anet::{nonblock, tcp_no_delay}, redis::{cmd::{discard_command, exec_command, lookup_command}, log::LogLevel, server_read, server_write, IO_BUF_LEN}, util::{error, timestamp}, zmalloc::used_memory};
+use crate::{ae::{EventLoop, Mask}, anet::{nonblock, tcp_no_delay}, redis::{cmd::{discard_command, exec_command, lookup_command}, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
 use super::{cmd::{call, RedisCommand, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType}, RedisDB, ReplState};
 
 pub struct ClientFlags(u8);
@@ -85,14 +84,18 @@ impl Drop for RedisClient {
 }
 
 impl RedisClient {
+    pub fn fd(&self) -> i32 {
+        self.fd
+    }
+
     pub fn create(fd: i32) -> Result<Arc<RwLock<RedisClient>>, String> {
         match nonblock(fd) {
             Ok(_) => {},
-            Err(e) => { server_read().log(LogLevel::Warning, &format!("client created: {e}")); },
+            Err(e) => { return Err(e); },
         }
         match tcp_no_delay(fd) {
             Ok(_) => {},
-            Err(e) => { server_read().log(LogLevel::Warning, &format!("client crated: {e}")); },
+            Err(e) => { return Err(e); },
         }
         let mut c = RedisClient {
             fd,
@@ -153,7 +156,7 @@ impl RedisClient {
 
     fn select_db(&mut self, id: i32) {
         if id < 0 || id >= server_read().dbnum {
-            server_read().log(LogLevel::Warning, &format!("Invalid db #{} out of [0, {})", id, server_read().dbnum));
+            log(LogLevel::Warning, &format!("Invalid db #{} out of [0, {})", id, server_read().dbnum));
             return;
         }
         self.db = Some(server_read().dbs[id as usize].clone());
@@ -220,7 +223,7 @@ impl WrappedClient {
                 }
                 return;
             } else if c.query_buf.len() >= MAX_SIZE_INLINE_CMD {
-                server_read().log(LogLevel::Verbose, "Client protocol error");
+                log(LogLevel::Verbose, "Client protocol error");
                 // TODO: free client?
                 return;
             }
@@ -234,7 +237,7 @@ impl WrappedClient {
                 let mut iter = query_buf_c.lines();
                 let arg = iter.next().expect("last arg doesn't exist");
                 if arg.len() != c.bulk_len as usize {
-                    server_read().log(LogLevel::Warning, &format!("arg '{}' isn't consistent with bulk len '{}'", arg, c.bulk_len));
+                    log(LogLevel::Warning, &format!("arg '{}' isn't consistent with bulk len '{}'", arg, c.bulk_len));
                     // TODO: free client?
                     return;
                 }
@@ -289,7 +292,7 @@ impl WrappedClient {
             match mbulk[1..].parse() {
                 Ok(n) => { c.multi_bulk = n; },
                 Err(e) => {
-                    server_read().log(LogLevel::Warning, &format!("Parsing multi bulk '{}' failed: {}", mbulk, e));
+                    log(LogLevel::Warning, &format!("Parsing multi bulk '{}' failed: {}", mbulk, e));
                 },
             }
 
@@ -307,7 +310,7 @@ impl WrappedClient {
                     match bulk[1..].parse() {
                         Ok(n) => { c.bulk_len = n; },
                         Err(e) => {
-                            server_read().log(LogLevel::Warning, &format!("Parsing bulk '{}' failed: {}", bulk, e));
+                            log(LogLevel::Warning, &format!("Parsing bulk '{}' failed: {}", bulk, e));
                         },
                     }
                     c.argv.clear();
@@ -383,7 +386,7 @@ impl WrappedClient {
                     match bulk.parse() {
                         Ok(n) => { c.bulk_len = n; },
                         Err(e) => {
-                            server_read().log(LogLevel::Warning, &format!("Parsing bulk '{}' failed: {}", bulk, e));
+                            log(LogLevel::Warning, &format!("Parsing bulk '{}' failed: {}", bulk, e));
                         },
                     }
 
@@ -479,12 +482,12 @@ fn read_query_from_client(_el: &mut EventLoop, fd: i32, priv_data: Option<Arc<Rw
             if error() == EAGAIN {
                 nread = 0;
             } else {
-                server_read().log(LogLevel::Verbose, &format!("Reading from client: {}", *strerror(error())));
+                log(LogLevel::Verbose, &format!("Reading from client: {}", *strerror(error())));
                 // TODO: free client?
                 return;
             }
         } else if nread == 0 {
-            server_read().log(LogLevel::Verbose, "Client closed connection");
+            log(LogLevel::Verbose, "Client closed connection");
             // TODO: free client?
             return;
         }
@@ -495,7 +498,7 @@ fn read_query_from_client(_el: &mut EventLoop, fd: i32, priv_data: Option<Arc<Rw
                 client.query_buf.push_str(&s);
             },
             Err(e) => {
-                server_read().log(LogLevel::Warning, &format!("Parsing bytes from client failed: {}", e));
+                log(LogLevel::Warning, &format!("Parsing bytes from client failed: {}", e));
             },
         }
         client.last_interaction = timestamp().as_secs();

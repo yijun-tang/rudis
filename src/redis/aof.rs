@@ -1,5 +1,5 @@
 use std::{fs::OpenOptions, io::{BufRead, BufReader, Read}, process::exit, sync::Arc};
-use crate::{redis::{log::LogLevel, RedisClient}, zmalloc::used_memory};
+use crate::{redis::RedisClient, util::{log, LogLevel}, zmalloc::used_memory};
 use super::{cmd::lookup_command, obj::{try_object_encoding, try_object_sharing, RedisObject, StringStorageType}, RedisServer};
 
 impl RedisServer {
@@ -7,84 +7,84 @@ impl RedisServer {
     /// error (the append only file is zero-length) REDIS_ERR is returned. On
     /// fatal error an error message is logged and the program exists.
     pub fn load_append_only_file(&self) -> Result<(), String> {
-        let mut reader: Option<Box<dyn Read>> = None;
+        let mut _reader: Option<Box<dyn Read>> = None;
         match OpenOptions::new().read(true).open(&self.append_filename) {
             Ok(f) => {
                 match f.metadata() {
                     Ok(meta_d) => {
                         if meta_d.len() == 0 {
-                            self.log(LogLevel::Notice, "Empty aof file");
+                            log(LogLevel::Notice, "Empty aof file");
                             return Ok(());
                         }
                     },
                     Err(e) => {
-                        self.log(LogLevel::Warning, &format!("Failed to get metadata of aof file: {}", e));
+                        log(LogLevel::Warning, &format!("Failed to get metadata of aof file: {}", e));
                     },
                 }
-                reader = Some(Box::new(f));
+                _reader = Some(Box::new(f));
             }
             Err(e) => {
-                self.log(LogLevel::Warning, &format!("Fatal error: can't open the append log file for reading: {}", e));
+                log(LogLevel::Warning, &format!("Fatal error: can't open the append log file for reading: {}", e));
                 exit(1);
             },
         }
 
-        let read_err = |server: &RedisServer, err: &str| {
-            server.log(LogLevel::Warning, &format!("Unrecoverable error reading the append only file: {err}"));
+        let read_err = |err: &str| {
+            log(LogLevel::Warning, &format!("Unrecoverable error reading the append only file: {err}"));
             exit(1);
         };
 
-        let fmt_err = |server: &RedisServer| {
-            server.log(LogLevel::Warning, "Bad file format reading the append only file");
+        let fmt_err = || {
+            log(LogLevel::Warning, "Bad file format reading the append only file");
             exit(1);
         };
 
         let mut loaded_keys = 0u128;
-        let mut iter = BufReader::new(reader.unwrap()).lines();
+        let mut iter = BufReader::new(_reader.unwrap()).lines();
         let mut fake_client = Box::new(RedisClient::create_fake_client());
         loop {
             if let Some(line) = iter.next() {
                 match line {
                     Ok(line) => {
                         if !line.starts_with("*") {
-                            fmt_err(self);
+                            fmt_err();
                         }
                         let mut argc = 0;
                         let mut argv: Vec<Arc<RedisObject>> = Vec::new();
                         if let Ok(i) = (line[1..]).parse() {
                             argc = i;
-                        } else { fmt_err(self); }
+                        } else { fmt_err(); }
                         for _ in 0..argc {
                             let mut len = 0u64;
                             if let Some(line_a) = iter.next() {
                                 match line_a {
                                     Ok(line_a) => {
                                         if !line_a.starts_with("$") {
-                                            fmt_err(self);
+                                            fmt_err();
                                         }
                                         if let Ok(l) = (line_a[1..]).parse() {
                                             len = l;
-                                        } else { fmt_err(self); }
+                                        } else { fmt_err(); }
                                     },
-                                    Err(e) => { read_err(self, &e.to_string()); },
+                                    Err(e) => { read_err(&e.to_string()); },
                                 }
-                            } else { fmt_err(self); }
+                            } else { fmt_err(); }
                             if let Some(line_a) = iter.next() {
                                 match line_a {
                                     Ok(line_a) => {
-                                        if line_a.len() != len as usize { fmt_err(self); }
+                                        if line_a.len() != len as usize { fmt_err(); }
                                         argv.push(Arc::new(RedisObject::String { ptr: StringStorageType::String(line_a) }));
                                     },
-                                    Err(e) => { read_err(self, &e.to_string()); },
+                                    Err(e) => { read_err(&e.to_string()); },
                                 }
-                            } else { fmt_err(self); }
+                            } else { fmt_err(); }
                         }
 
                         // Command lookup
                         let name = argv[0].string().unwrap().string().unwrap();
                         let cmd = lookup_command(name);
                         if cmd.is_none() {
-                            self.log(LogLevel::Warning, &format!("Unknown command '{}' reading the append only file", name));
+                            log(LogLevel::Warning, &format!("Unknown command '{}' reading the append only file", name));
                             exit(1);
                         }
 
@@ -117,7 +117,7 @@ impl RedisServer {
                         }
                     },
                     Err(e) => {
-                        read_err(self, &e.to_string());
+                        read_err(&e.to_string());
                     },
                 }
             } else {
