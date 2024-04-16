@@ -2,9 +2,10 @@
 //! for the Jim's event-loop (Jim is a Tcl interpreter) but later translated
 //! it in form of a library for easy reuse.
 
-use std::{any::Any, mem::zeroed, ops::{BitAnd, BitOr, Deref}, ptr::{null, null_mut}, sync::{Arc, RwLock}};
-use libc::{close, fd_set, timespec, timeval, FD_ISSET, FD_SET, FD_ZERO};
-use crate::{redis::client::RedisClient, util::{add_ms_to_now, error, get_time_ms}};
+use std::{any::Any, mem::zeroed, ops::{BitAnd, BitOr, Deref}, sync::{Arc, RwLock}};
+use libc::{fd_set, timeval, FD_ISSET, FD_SET, FD_ZERO};
+use crate::{redis::client::RedisClient, util::{add_ms_to_now, get_time_ms}};
+use self::io_event::{api_create, ApiState};
 
 const SET_SIZE: usize = 1024 * 10;    // Max number of fd supported
 
@@ -140,7 +141,7 @@ pub struct EventLoop {
 
 impl EventLoop {
     pub fn create() -> Result<EventLoop, String> {
-        let api_state = Self::api_create()?;
+        let api_state = api_create()?;
         let mut event_loop = EventLoop {
             max_fd: -1,
             time_event_next_id: 0,
@@ -349,8 +350,11 @@ impl EventLoop {
 
     /// Wait for millseconds until the given file descriptor becomes
     /// writable/readable/exception
+    #[cfg(target_os = "macos")]
     pub fn wait(fd: i32, mask: Mask, milliseconds: u128) -> Result<Mask, i32> {
-        let mut timeout = timeval { tv_sec: (milliseconds / 1000) as i64, tv_usec: ((milliseconds % 1000) * 1000) as i64 };
+        use libc::select;
+
+        let mut timeout = timeval { tv_sec: (milliseconds / 1000) as i64, tv_usec: ((milliseconds % 1000) * 1000) as i32 };
         let mut ret_mask = Mask::None;
         let mut ret_val = 0;
         let mut rfds: fd_set;
@@ -484,7 +488,15 @@ impl EventLoop {
 }
 
 #[cfg(target_os = "macos")]
-mod kqueue {
+mod io_event {
+    use std::ptr::{null, null_mut};
+
+    use libc::{close, kevent, kqueue, strerror, timespec, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_DELETE};
+
+    use crate::util::error;
+
+    use super::{FiredEvent, Mask, SET_SIZE};
+
     #[derive(Clone, Copy)]
     pub struct Kevent {
         ident: i32,
@@ -500,7 +512,7 @@ mod kqueue {
     }
 
     impl ApiState {
-        fn add_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
+        pub fn add_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
             let mut ke = kevent {
                 ident: fd as usize,
                 filter: EVFILT_READ,
@@ -523,7 +535,7 @@ mod kqueue {
             Ok(())
         }
 
-        fn del_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
+        pub fn del_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
             let mut ke = kevent {
                 ident: fd as usize,
                 filter: EVFILT_READ,
@@ -546,7 +558,7 @@ mod kqueue {
             Ok(())
         }
 
-        fn poll(&mut self, fired: &mut Vec<FiredEvent>, time_val_us: Option<u128>) -> i32 {
+        pub fn poll(&mut self, fired: &mut Vec<FiredEvent>, time_val_us: Option<u128>) -> i32 {
             let mut ret_val = 0;
             if let Some(tv_us) = time_val_us {
                 let timeout = timespec{ tv_sec: (tv_us / 1000_000u128) as i64, tv_nsec: ((tv_us % 1000_000u128) * 1000) as i64 };
@@ -582,7 +594,7 @@ mod kqueue {
             num_events
         }
 
-        fn name() -> String {
+        pub fn name() -> String {
             "kqueue".to_string()
         }
     }
@@ -601,7 +613,7 @@ mod kqueue {
         }
     }
 
-    fn api_create() -> Result<ApiState, String> {
+    pub fn api_create() -> Result<ApiState, String> {
         let mut kqfd = -1;
         let mut err = String::new();
         unsafe {
@@ -616,7 +628,7 @@ mod kqueue {
 }
 
 #[cfg(target_os = "linux")]
-mod epoll {
+mod io_event {
     use libc::{close, epoll_create, epoll_event, strerror};
 
     use crate::util::error;
@@ -630,7 +642,7 @@ mod epoll {
     }
 
     impl ApiState {
-        fn add_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
+        pub fn add_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
             let mut ke = kevent {
                 ident: fd as usize,
                 filter: EVFILT_READ,
@@ -653,7 +665,7 @@ mod epoll {
             Ok(())
         }
 
-        fn del_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
+        pub fn del_event(&self, fd: i32, mask: Mask) -> Result<(), String> {
             let mut ke = kevent {
                 ident: fd as usize,
                 filter: EVFILT_READ,
@@ -676,7 +688,7 @@ mod epoll {
             Ok(())
         }
 
-        fn poll(&mut self, fired: &mut Vec<FiredEvent>, time_val_us: Option<u128>) -> i32 {
+        pub fn poll(&mut self, fired: &mut Vec<FiredEvent>, time_val_us: Option<u128>) -> i32 {
             let mut ret_val = 0;
             if let Some(tv_us) = time_val_us {
                 let timeout = timespec{ tv_sec: (tv_us / 1000_000u128) as i64, tv_nsec: ((tv_us % 1000_000u128) * 1000) as i64 };
@@ -712,7 +724,7 @@ mod epoll {
             num_events
         }
 
-        fn name() -> String {
+        pub fn name() -> String {
             "kqueue".to_string()
         }
     }

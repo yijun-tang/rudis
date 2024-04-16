@@ -36,7 +36,14 @@ pub fn tcp_server(port: u16, bindaddr: &str) -> Result<i32, String> {
             return Err(format!("setsockopt SO_REUSEADDR: {}\n", *strerror(error())));
         }
         sa = zeroed();
-        sa.sin_family = AF_INET as u16;
+        #[cfg(target_os = "linux")]
+        {
+            sa.sin_family = AF_INET as u16;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            sa.sin_family = AF_INET as u8;
+        }
         sa.sin_port = port.to_be();     // Network byte order is big endian, or most significant byte first
         sa.sin_addr.s_addr = INADDR_ANY.to_be();
         if !bindaddr.is_empty() {

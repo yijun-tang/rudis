@@ -1,7 +1,5 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use libc::__errno_location;
-
 pub fn timestamp() -> Duration {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
 }
@@ -24,7 +22,18 @@ pub fn yes_no_to_bool(s: &str) -> Result<bool, String> {
 
 #[cfg(target_os = "linux")]
 pub fn error() -> i32 {
+    use libc::__errno_location;
+    
     unsafe {
         *__errno_location()
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn error() -> i32 {
+    use libc::__error;
+
+    unsafe {
+        *__error()
     }
 }
