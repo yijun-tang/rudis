@@ -1,5 +1,5 @@
 use std::{env, process::exit, sync::Arc, time::Instant};
-use rredis::{ae::{el::{el_write, set_before_sleep_proc}, handler::before_sleep}, redis::{server_read, server_write, REDIS_VERSION}, util::{log, LogLevel}};
+use rredis::{ae::{el::{ae_main, set_before_sleep_proc}, handler::before_sleep}, redis::{server_read, server_write, REDIS_VERSION}, util::{log, LogLevel}};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -36,5 +36,5 @@ fn main() {
 
     log(LogLevel::Notice, &format!("The server is now ready to accept connections on port {}", server_read().port()));
     set_before_sleep_proc(Some(Arc::new(before_sleep)));
-    el_write().main();
+    ae_main();
 }

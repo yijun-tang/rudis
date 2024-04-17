@@ -1,17 +1,27 @@
-use std::{any::Any, net::Ipv4Addr, sync::{Arc, RwLock}};
+use std::{any::Any, collections::LinkedList, net::Ipv4Addr, sync::{Arc, RwLock}};
 
 use libc::{c_void, close, read, strerror, write, EAGAIN};
 
-use crate::{anet::accept, redis::{client::{clients_read, RedisClient}, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
+use crate::{anet::accept, redis::{client::{clients_read, clients_write, deleled_clients_read, RedisClient}, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
 
 use super::{EventLoop, Mask};
 
 /// This function gets called every time Redis is entering the
 /// main loop of the event driven library, that is, before to sleep
 /// for ready file descriptors.
-pub fn before_sleep(_el: &mut EventLoop) {
+pub fn before_sleep() {
     if server_read().vm_enabled() && server_read().io_ready_clients().len() > 0 {
         // TODO: vm related
+    }
+
+    // Remove deleted clients
+    if deleled_clients_read().len() > 0 {
+        let set = deleled_clients_read();
+        let mut existed: LinkedList<Arc<RwLock<RedisClient>>> = clients_read().iter()
+            .filter(|c| !set.contains(&c.read().unwrap().fd()))
+            .map(|c| c.clone()).collect();
+        clients_write().clear();
+        clients_write().append(&mut existed);
     }
 }
 
@@ -61,7 +71,7 @@ pub fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Arc<dyn Any
     1000
 }
 
-pub fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<i32>, mask: Mask) {
+pub fn accept_handler(el: &mut EventLoop, fd: i32, mask: Mask) {
     let (c_fd, c_ip, c_port) = match accept(fd) {
         Ok((c_fd, c_ip, c_port)) => { (c_fd, c_ip, c_port) },
         Err(e) => {
@@ -97,13 +107,21 @@ pub fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<i32>, mask:
     }
 }
 
-pub fn send_reply_to_client(el: &mut EventLoop, fd: i32, priv_data: Option<i32>, mask: Mask) {
+pub fn send_reply_to_client(el: &mut EventLoop, fd: i32, mask: Mask) {
+    let clients = clients_read();
+    let client_r = clients.iter().filter(|e| e.read().unwrap().fd() == fd).nth(0).expect("client not found");
+    let mut client = client_r.write().unwrap();
+
+    // Use writev() if we have enough buffers to send
+    // TODO:
+
+    
     todo!()
 }
 
-pub fn read_query_from_client(_el: &mut EventLoop, fd: i32, c_idx: Option<i32>, _mask: Mask) {
+pub fn read_query_from_client(_el: &mut EventLoop, fd: i32, _mask: Mask) {
     let clients = clients_read();
-    let client_r = clients.iter().nth(c_idx.unwrap() as usize).expect("client not found");
+    let client_r = clients.iter().filter(|e| e.read().unwrap().fd() == fd).nth(0).expect("client not found");
     let mut client = client_r.write().unwrap();
     let mut buf = [0u8; IO_BUF_LEN];
     let mut nread = 0isize;

@@ -1,4 +1,4 @@
-use std::{collections::LinkedList, ops::Deref, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
+use std::{collections::{HashSet, LinkedList}, ops::Deref, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
 use libc::close;
 use once_cell::sync::Lazy;
 
@@ -67,6 +67,9 @@ pub struct MultiState {
 pub static CLIENTS: Lazy<Box<RwLock<LinkedList<Arc<RwLock<RedisClient>>>>>> = Lazy::new(|| {
     Box::new(RwLock::new(LinkedList::new()))
 });
+pub static DELETED_CLIENTS: Lazy<RwLock<HashSet<i32>>> = Lazy::new(|| {
+    RwLock::new(HashSet::new())
+});
 
 pub fn clients_read() -> RwLockReadGuard<'static, LinkedList<Arc<RwLock<RedisClient>>>> {
     CLIENTS.read().unwrap()
@@ -76,10 +79,17 @@ pub fn clients_write() -> RwLockWriteGuard<'static, LinkedList<Arc<RwLock<RedisC
     CLIENTS.write().unwrap()
 }
 
+pub fn deleled_clients_read() -> RwLockReadGuard<'static, HashSet<i32>> {
+    DELETED_CLIENTS.read().unwrap()
+}
+
+pub fn deleted_clients_write() -> RwLockWriteGuard<'static, HashSet<i32>> {
+    DELETED_CLIENTS.write().unwrap()
+}
+
 /// With multiplexing we need to take per-clinet state.
 /// Clients are taken in a liked list.
 pub struct RedisClient {
-    id: usize,
     fd: i32,
     db: Option<Arc<RedisDB>>,
     pub query_buf: String,
@@ -144,9 +154,7 @@ impl RedisClient {
             Ok(_) => {},
             Err(e) => { return Err(e); },
         }
-        let id = clients_read().len();
         let mut c = RedisClient {
-            id,
             fd,
             db: None,
             query_buf: String::new(),
@@ -166,7 +174,7 @@ impl RedisClient {
         };
         c.select_db(0);
         let c = Arc::new(RwLock::new(c));
-        el.create_file_event(fd, Mask::Readable, Arc::new(read_query_from_client), Some(id as i32))?;
+        el.create_file_event(fd, Mask::Readable, Arc::new(read_query_from_client))?;
         clients_write().push_back(c.clone());
         Ok(c)
     }
@@ -175,7 +183,6 @@ impl RedisClient {
     /// order to load the append only file we need to create a fake client.
     pub fn create_fake_client() -> RedisClient {
         let mut c = RedisClient { 
-            id: todo!(),
             db: None, 
             fd: -1, 
             query_buf: String::new(),
@@ -397,9 +404,7 @@ impl RedisClient {
         // procs are unable to close the client connection safely
         if name.eq_ignore_ascii_case("quit") {
             log(LogLevel::Verbose, "quit executed");
-            // TODO: free client?
-            let mut clients = clients_write();
-            clients.remove(self.id);
+            deleted_clients_write().insert(self.fd);
             return false;
         }
 
@@ -491,12 +496,12 @@ impl RedisClient {
         };
     }
 
-    fn add_reply(&mut self, obj: RedisObject) {
+    pub fn add_reply(&mut self, obj: Arc<RedisObject>) {
         if self.reply.is_empty() &&
             (self.repl_state == ReplState::None ||
              self.repl_state == ReplState::Online) &&
             el_write().create_file_event(self.fd, Mask::Writable, 
-                Arc::new(send_reply_to_client), Some(self.id as i32)).is_err() {
+                Arc::new(send_reply_to_client)).is_err() {
             return;
         }
 
@@ -506,6 +511,6 @@ impl RedisClient {
     }
 
     fn add_reply_str(&mut self, s: &str) {
-        self.add_reply(RedisObject::String { ptr: StringStorageType::String(s.to_string()) });
+        self.add_reply(Arc::new(RedisObject::String { ptr: StringStorageType::String(s.to_string()) }));
     }
 }

@@ -353,7 +353,7 @@ impl RedisServer {
         }
 
         el_write().create_time_event(1, Arc::new(server_cron), None, None);
-        match el_write().create_file_event(self.fd, Mask::Readable, Arc::new(accept_handler), None) {
+        match el_write().create_file_event(self.fd, Mask::Readable, Arc::new(accept_handler)) {
             Ok(_) => {},
             Err(e) => { oom(&e); },    // TODO: is it appropriate to call oom?
         }

@@ -1,5 +1,7 @@
 use std::{collections::HashMap, ops::BitOr, sync::Arc};
 use once_cell::sync::Lazy;
+use crate::redis::obj::PONG;
+
 use super::{client::RedisClient, server_write};
 
 pub static MAX_SIZE_INLINE_CMD: usize = 1024 * 1024 * 256;  // max bytes in inline command
@@ -111,7 +113,7 @@ fn set_generic_command(c: &mut RedisClient, nx: i32) {
 }
 
 fn ping_command(c: &mut RedisClient) {
-    todo!()
+    c.add_reply(PONG.clone());
 }
 
 pub fn exec_command(c: &mut RedisClient) {

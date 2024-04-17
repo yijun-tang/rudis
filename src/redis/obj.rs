@@ -92,6 +92,7 @@ pub static SELECT9: Lazy<Arc<RedisObject>> = Lazy::new(|| {
 
 
 /// Object types
+#[derive(Clone)]
 pub enum RedisObject {
     String {
         ptr: StringStorageType,
@@ -112,21 +113,22 @@ impl RedisObject {
 
     /// Get a decoded version of an encoded object (returned as a new object).
     /// If the object is already raw-encoded just increment the ref count.
-    pub fn get_decoded(self) -> RedisObject {
+    pub fn get_decoded(&self) -> RedisObject {
         match &self {
             Self::String { ptr } => {
                 match ptr {
                     StringStorageType::Integer(n) => {
                         RedisObject::String { ptr: StringStorageType::String(n.to_string()) }
                     },
-                    _ => { self },
+                    _ => { self.clone() },
                 }
             },
-            _ => { self },
+            _ => { self.clone() },
         }
     }
 }
 
+#[derive(Clone)]
 pub enum StringStorageType {
     String(String),     // raw string
     Integer(isize),     // encoded as integer
