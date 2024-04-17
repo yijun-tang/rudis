@@ -1,16 +1,16 @@
 //! A generic doubly linked list implementation.
 
-use std::{cell::RefCell, ops::Deref, rc::{Rc, Weak}};
+use std::{cell::RefCell, ops::Deref, sync::{Arc, Weak}};
 
 #[derive(Debug)]
 pub struct ListNode<T> {
     prev: Option<Weak<RefCell<ListNode<T>>>>,
-    next: Option<Rc<RefCell<ListNode<T>>>>,
-    value: Option<Rc<T>>,
+    next: Option<Arc<RefCell<ListNode<T>>>>,
+    value: Option<Arc<T>>,
 }
 
 impl<T> ListNode<T> {
-    pub fn prev(&self) -> Option<Rc<RefCell<ListNode<T>>>> {
+    pub fn prev(&self) -> Option<Arc<RefCell<ListNode<T>>>> {
         if let Some(p) = self.prev.clone() {
             if let Some(p) = p.upgrade() {
                 return Some(p);
@@ -19,34 +19,32 @@ impl<T> ListNode<T> {
         None
     }
 
-    pub fn next(&self) -> Option<Rc<RefCell<ListNode<T>>>> {
+    pub fn next(&self) -> Option<Arc<RefCell<ListNode<T>>>> {
         self.next.clone()
     }
 
-    pub fn value(&self) -> Option<Rc<T>> {
+    pub fn value(&self) -> Option<Arc<T>> {
         self.value.clone()
     }
 }
 
 #[derive(Debug)]
 pub struct List<T> {
-    head: Option<Rc<RefCell<ListNode<T>>>>,
-    tail: Option<Rc<RefCell<ListNode<T>>>>,
+    head: Option<Arc<RefCell<ListNode<T>>>>,
+    tail: Option<Arc<RefCell<ListNode<T>>>>,
     len: usize,
 }
 
 impl<T: PartialEq> List<T> {
     /// Create a new list.
-    /// 
-    /// TODO: AlFreeList()
     pub fn new() -> List<T> {
         List { head: None, tail: None, len: 0 }
     }
 
     /// Add a new node to the list, to head, contaning the specified 'value' 
     /// pointer as value.
-    pub fn add_node_head(&mut self, value: Option<Rc<T>>) -> &mut Self {
-        let node = Rc::new(RefCell::new(
+    pub fn add_node_head(&mut self, value: Option<Arc<T>>) -> &mut Self {
+        let node = Arc::new(RefCell::new(
             ListNode { prev: None, next: self.head.take(), value }
         ));
         if self.len == 0 {
@@ -55,7 +53,7 @@ impl<T: PartialEq> List<T> {
         } else {
             self.head = Some(node.clone());
             if let Some(p) = node.deref().borrow().next.clone() {
-                p.deref().borrow_mut().prev = Some(Rc::downgrade(&node));
+                p.deref().borrow_mut().prev = Some(Arc::downgrade(&node));
             }
         }
         self.len += 1;
@@ -64,8 +62,8 @@ impl<T: PartialEq> List<T> {
 
     /// Add a new node to the list, to tail, contaning the specified 'value' 
     /// pointer as value.
-    pub fn add_node_tail(&mut self, value: Option<Rc<T>>) -> &mut Self {
-        let node = Rc::new(RefCell::new(
+    pub fn add_node_tail(&mut self, value: Option<Arc<T>>) -> &mut Self {
+        let node = Arc::new(RefCell::new(
             ListNode { prev: None, next: None, value }
         ));
         if self.len == 0 {
@@ -74,7 +72,7 @@ impl<T: PartialEq> List<T> {
         } else {
             if let Some(t) = self.tail.clone() {
                 t.deref().borrow_mut().next = Some(node.clone());
-                node.deref().borrow_mut().prev = Some(Rc::downgrade(&t));
+                node.deref().borrow_mut().prev = Some(Arc::downgrade(&t));
                 self.tail = Some(node.clone());
             }
         }
@@ -86,7 +84,7 @@ impl<T: PartialEq> List<T> {
     /// The caller shouldn't hold the reference to the node. 
     /// 
     /// Assumption: the node belongs to the list.
-    pub fn del_node(&mut self, node: Option<Rc<RefCell<ListNode<T>>>>) {
+    pub fn del_node(&mut self, node: Option<Arc<RefCell<ListNode<T>>>>) {
         if let Some(node) = node {
             if node.deref().borrow().prev.is_some() {
                 if let Some(p) = node.deref().borrow().prev.clone() {
@@ -139,7 +137,7 @@ impl<T: PartialEq> List<T> {
     }
 
     /// Search the list for a node matching a given key.
-    pub fn search_key(&self, key: Option<Rc<T>>) -> Option<Rc<RefCell<ListNode<T>>>> {
+    pub fn search_key(&self, key: Option<Arc<T>>) -> Option<Arc<RefCell<ListNode<T>>>> {
         if let Some(key) = key {
             let mut iter = self.iter(IterDir::AlStartHead);
         
@@ -159,16 +157,16 @@ impl<T: PartialEq> List<T> {
     /// and so on. Negative integers are used in order to count
     /// from the tail, -1 is the last element, -2 the penultimante
     /// and so on. If the index is out of range None is returned.
-    pub fn index(&self, mut index: isize) -> Option<Rc<RefCell<ListNode<T>>>> {
-        let mut n: Option<Rc<RefCell<ListNode<T>>>> = None;
+    pub fn index(&self, mut index: isize) -> Option<Arc<RefCell<ListNode<T>>>> {
+        let mut _n: Option<Arc<RefCell<ListNode<T>>>> = None;
 
         if index < 0 {
             index = (-index) - 1;
-            n = self.tail.clone();
-            while index > 0 && n.is_some() {
-                if let Some(p) = n.unwrap().deref().borrow().prev.clone() {
+            _n = self.tail.clone();
+            while index > 0 && _n.is_some() {
+                if let Some(p) = _n.unwrap().deref().borrow().prev.clone() {
                     if let Some(p) = p.upgrade() {
-                        n = Some(p);
+                        _n = Some(p);
                     } else {
                         return None;
                     }
@@ -178,13 +176,13 @@ impl<T: PartialEq> List<T> {
                 index -= 1;
             }
         } else {
-            n = self.head.clone();
-            while index > 0 && n.is_some() {
-                n = n.unwrap().deref().borrow().next.clone();
+            _n = self.head.clone();
+            while index > 0 && _n.is_some() {
+                _n = _n.unwrap().deref().borrow().next.clone();
                 index -= 1;
             }
         }
-        n
+        _n
     }
 
     // TODO: replacing Rust macros for c macros
@@ -193,11 +191,11 @@ impl<T: PartialEq> List<T> {
         self.len
     }
 
-    pub fn first(&self) -> Option<Rc<RefCell<ListNode<T>>>> {
+    pub fn first(&self) -> Option<Arc<RefCell<ListNode<T>>>> {
         self.head.clone()
     }
 
-    pub fn last(&self) -> Option<Rc<RefCell<ListNode<T>>>> {
+    pub fn last(&self) -> Option<Arc<RefCell<ListNode<T>>>> {
         self.tail.clone()
     }
 }
@@ -210,7 +208,7 @@ impl<T: PartialEq + Clone> Clone for List<T> {
         let mut iter = self.iter(IterDir::AlStartHead);
         while let Some(node) = iter.next() {
             if let Some(n) = node.deref().borrow().value() {
-                clone.add_node_tail(Some(Rc::new(n.deref().clone())));
+                clone.add_node_tail(Some(Arc::new(n.deref().clone())));
             }
         }
         clone
@@ -218,7 +216,7 @@ impl<T: PartialEq + Clone> Clone for List<T> {
 }
 
 pub struct ListIter<T> {
-    next: Option<Rc<RefCell<ListNode<T>>>>,
+    next: Option<Arc<RefCell<ListNode<T>>>>,
     direction: IterDir,
 }
 
@@ -226,7 +224,7 @@ impl<T> ListIter<T> {
     /// Return the next element of an iterator.
     /// It's valid to remove the currently returned element using 
     /// `del_node()`, but not to remove other elements.
-    pub fn next(&mut self) -> Option<Rc<RefCell<ListNode<T>>>> {
+    pub fn next(&mut self) -> Option<Arc<RefCell<ListNode<T>>>> {
         if let Some(c) = self.next.clone() {
             match self.direction {
                 IterDir::AlStartHead => {
@@ -262,10 +260,10 @@ mod tests {
     #[test]
     fn basic_test() {
         let mut list: List<i32> = List::new();
-        list.add_node_tail(Some(Rc::new(1)))
-            .add_node_tail(Some(Rc::new(2)))
-            .add_node_tail(Some(Rc::new(3)))
-            .add_node_tail(Some(Rc::new(4)));
+        list.add_node_tail(Some(Arc::new(1)))
+            .add_node_tail(Some(Arc::new(2)))
+            .add_node_tail(Some(Arc::new(3)))
+            .add_node_tail(Some(Arc::new(4)));
         assert_eq!(format!("{:?}", list), "List { head: Some(RefCell { value: ListNode { prev: None, next: Some(RefCell { value: ListNode { prev: Some((Weak)), next: Some(RefCell { value: ListNode { prev: Some((Weak)), next: Some(RefCell { value: ListNode { prev: Some((Weak)), next: None, value: Some(4) } }), value: Some(3) } }), value: Some(2) } }), value: Some(1) } }), tail: Some(RefCell { value: ListNode { prev: Some((Weak)), next: None, value: Some(4) } }), len: 4 }");
 
         let mut iter = list.iter(IterDir::AlStartTail);
