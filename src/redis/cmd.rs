@@ -123,9 +123,9 @@ pub fn discard_command(c: &mut RedisClient) {
 }
 
 /// Call() is the core of Redis execution of a command
-pub fn call(c: &WrappedClient, cmd: &RedisCommand) {
+pub fn call(c: &mut RedisClient, cmd: &RedisCommand) {
     let f = &cmd.proc;
-    f(c.inner().write().unwrap().borrow_mut());
+    f(c);
 
     // TODO
 

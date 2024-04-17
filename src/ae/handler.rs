@@ -1,8 +1,8 @@
 use std::{any::Any, net::Ipv4Addr, sync::{Arc, RwLock}};
 
-use libc::{c_void, close, write};
+use libc::{c_void, close, read, strerror, write, EAGAIN};
 
-use crate::{anet::accept, redis::{client::RedisClient, server_read, server_write}, util::{log, timestamp, LogLevel}, zmalloc::used_memory};
+use crate::{anet::accept, redis::{client::{RedisClient, WrappedClient}, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
 
 use super::{EventLoop, Mask};
 
@@ -95,4 +95,56 @@ pub fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<
             return;
         },
     }
+}
+
+pub fn send_reply_to_client(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<RedisClient>>>, mask: Mask) {
+    todo!()
+}
+
+pub fn read_query_from_client(_el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<RedisClient>>>, _mask: Mask) {
+    let mut blocked = false;
+    {
+        log(LogLevel::Verbose, "read_query_from_client entered");
+        let priv_data_c = priv_data.clone().unwrap();
+        let mut client = priv_data_c.write().unwrap();
+        let mut buf = [0u8; IO_BUF_LEN];
+        let mut nread = 0isize;
+
+        unsafe {
+            nread = read(fd, &mut buf[0] as *mut _ as *mut c_void, IO_BUF_LEN);
+            if nread == -1 {
+                if error() == EAGAIN {
+                    nread = 0;
+                } else {
+                    log(LogLevel::Verbose, &format!("Reading from client: {}", *strerror(error())));
+                    // TODO: free client?
+                    return;
+                }
+            } else if nread == 0 {
+                log(LogLevel::Verbose, "Client closed connection");
+                // TODO: free client?
+                return;
+            }
+        }
+        if nread != 0 {
+            match String::from_utf8(buf.to_vec()) {
+                Ok(s) => {
+                    client.query_buf.push_str(&s);
+                },
+                Err(e) => {
+                    log(LogLevel::Warning, &format!("Parsing bytes from client failed: {}", e));
+                },
+            }
+            client.last_interaction = timestamp().as_secs();
+        } else {
+            return;
+        }
+        blocked = client.flags.is_blocked();
+    }
+    
+    if !blocked {
+        log(LogLevel::Verbose, "read_query_from_client processing");
+        WrappedClient(priv_data.unwrap()).process_input_buf();
+    }
+    log(LogLevel::Verbose, "read_query_from_client left");
 }

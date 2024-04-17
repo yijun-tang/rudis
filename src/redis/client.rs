@@ -1,6 +1,5 @@
-use std::{borrow::BorrowMut, collections::LinkedList, ops::Deref, sync::{Arc, RwLock}};
-use libc::{c_void, read, strerror, EAGAIN};
-use crate::{ae::{el::el_write, EventLoop, Mask}, anet::{nonblock, tcp_no_delay}, redis::{cmd::{discard_command, exec_command, lookup_command}, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
+use std::{collections::LinkedList, ops::Deref, sync::{Arc, RwLock}};
+use crate::{ae::{el::el_write, handler::{read_query_from_client, send_reply_to_client}, EventLoop, Mask}, anet::{nonblock, tcp_no_delay}, redis::{cmd::lookup_command, server_read, server_write}, util::{log, timestamp, LogLevel}, zmalloc::used_memory};
 use super::{cmd::{call, RedisCommand, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType}, RedisDB, ReplState};
 
 pub struct ClientFlags(u8);
@@ -31,7 +30,7 @@ impl ClientFlags {
         ClientFlags(32)
     }
 
-    fn is_blocked(&self) -> bool {
+    pub fn is_blocked(&self) -> bool {
         (self.0 & Self::blocked().0) != 0
     }
 
@@ -59,15 +58,15 @@ pub struct MultiState {
 pub struct RedisClient {
     fd: i32,
     db: Option<Arc<RedisDB>>,
-    query_buf: String,
+    pub query_buf: String,
     argv: Vec<Arc<RedisObject>>,
     mbargv: Vec<Arc<RedisObject>>,
     bulk_len: i32,                  // bulk read len. -1 if not in bulk read mode
     multi_bulk: i32,                // multi bulk command format active
     sent_len: usize,
     reply: LinkedList<Arc<RedisObject>>,
-    flags: ClientFlags,
-    last_interaction: u64,          // time of the last interaction, used for timeout (in seconds)
+    pub flags: ClientFlags,
+    pub last_interaction: u64,          // time of the last interaction, used for timeout (in seconds)
     authenticated: bool,            // when requirepass is non-NULL
     repl_state: ReplState,          // replication state if this is a slave
     mstate: MultiState,             // MULTI/EXEC state
@@ -171,15 +170,17 @@ impl RedisClient {
     }
 }
 
-pub struct WrappedClient(Arc<RwLock<RedisClient>>);
+pub struct WrappedClient(pub Arc<RwLock<RedisClient>>);
 
 impl WrappedClient {
     pub fn inner(&self) -> Arc<RwLock<RedisClient>> {
         self.0.clone()
     }
 
-    fn process_input_buf(&self) {
+    pub fn process_input_buf(&self) {
+        log(LogLevel::Verbose, "process_input_buf entered");
         let mut c = self.0.write().unwrap();
+        log(LogLevel::Verbose, "process_input_buf processing");
         // Before to process the input buffer, make sure the client is not
         // waitig for a blocking operation such as BLPOP. Note that the first
         // iteration the client is never blocked, otherwise the processInputBuffer
@@ -436,7 +437,7 @@ impl WrappedClient {
                         // TODO
                 } else {
                     // TODO: vm
-                    call(self, cmd);
+                    call(&mut c, cmd);
                 }
 
                 // Prepare the client for the next command
@@ -464,51 +465,4 @@ impl WrappedClient {
     fn add_reply_str(&self, s: &str) {
         self.add_reply(RedisObject::String { ptr: StringStorageType::String(s.to_string()) });
     }
-}
-
-fn send_reply_to_client(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<RedisClient>>>, mask: Mask) {
-    todo!()
-}
-
-fn read_query_from_client(_el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<RedisClient>>>, _mask: Mask) {
-    log(LogLevel::Verbose, "read_query_from_client entered");
-    let priv_data_c = priv_data.clone().unwrap();
-    let mut client = priv_data_c.write().unwrap();
-    let mut buf = [0u8; IO_BUF_LEN];
-    let mut nread = 0isize;
-
-    unsafe {
-        nread = read(fd, &mut buf[0] as *mut _ as *mut c_void, IO_BUF_LEN);
-        if nread == -1 {
-            if error() == EAGAIN {
-                nread = 0;
-            } else {
-                log(LogLevel::Verbose, &format!("Reading from client: {}", *strerror(error())));
-                // TODO: free client?
-                return;
-            }
-        } else if nread == 0 {
-            log(LogLevel::Verbose, "Client closed connection");
-            // TODO: free client?
-            return;
-        }
-    }
-    if nread != 0 {
-        match String::from_utf8(buf.to_vec()) {
-            Ok(s) => {
-                client.query_buf.push_str(&s);
-            },
-            Err(e) => {
-                log(LogLevel::Warning, &format!("Parsing bytes from client failed: {}", e));
-            },
-        }
-        client.last_interaction = timestamp().as_secs();
-    } else {
-        return;
-    }
-    if !client.flags.is_blocked() {
-        log(LogLevel::Verbose, "read_query_from_client processing");
-        WrappedClient(priv_data.unwrap()).process_input_buf();
-    }
-    log(LogLevel::Verbose, "read_query_from_client left");
 }
