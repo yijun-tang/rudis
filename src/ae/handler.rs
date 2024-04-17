@@ -1,10 +1,9 @@
-use std::{any::Any, collections::LinkedList, net::Ipv4Addr, sync::{Arc, RwLock}};
-
+use std::{any::Any, borrow::Borrow, collections::LinkedList, net::Ipv4Addr, sync::{Arc, RwLock}};
 use libc::{c_void, close, read, strerror, write, EAGAIN};
+use crate::{anet::accept, redis::{client::{clients_read, clients_write, deleled_clients_read, deleted_clients_write, RedisClient}, obj::{RedisObject, StringStorageType}, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
+use super::{delete_file_event, Mask};
 
-use crate::{anet::accept, redis::{client::{clients_read, clients_write, deleled_clients_read, RedisClient}, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
-
-use super::{EventLoop, Mask};
+static MAX_WRITE_PER_EVENT: usize = 1024 * 64;
 
 /// This function gets called every time Redis is entering the
 /// main loop of the event driven library, that is, before to sleep
@@ -16,16 +15,19 @@ pub fn before_sleep() {
 
     // Remove deleted clients
     if deleled_clients_read().len() > 0 {
-        let set = deleled_clients_read();
-        let mut existed: LinkedList<Arc<RwLock<RedisClient>>> = clients_read().iter()
-            .filter(|c| !set.contains(&c.read().unwrap().fd()))
-            .map(|c| c.clone()).collect();
-        clients_write().clear();
-        clients_write().append(&mut existed);
+        {
+            let set = deleled_clients_read();
+            let mut existed: LinkedList<Arc<RwLock<RedisClient>>> = clients_read().iter()
+                .filter(|c| !set.contains(&c.read().unwrap().fd()))
+                .map(|c| c.clone()).collect();
+            clients_write().clear();
+            clients_write().append(&mut existed);
+        }
+        deleted_clients_write().clear();
     }
 }
 
-pub fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) -> i32 {
+pub fn server_cron(id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) -> i32 {
     let loops = server_read().cron_loops();
     server_write().set_cron_loops(loops + 1);
 
@@ -71,7 +73,7 @@ pub fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Arc<dyn Any
     1000
 }
 
-pub fn accept_handler(el: &mut EventLoop, fd: i32, mask: Mask) {
+pub fn accept_handler(fd: i32, mask: Mask) {
     let (c_fd, c_ip, c_port) = match accept(fd) {
         Ok((c_fd, c_ip, c_port)) => { (c_fd, c_ip, c_port) },
         Err(e) => {
@@ -80,7 +82,7 @@ pub fn accept_handler(el: &mut EventLoop, fd: i32, mask: Mask) {
         },
     };
     log(LogLevel::Verbose, &format!("Accepted {}:{c_port}", Ipv4Addr::from_bits(c_ip)));
-    match RedisClient::create(el, c_fd) {
+    match RedisClient::create(c_fd) {
         Ok(client) => {
             // If maxclient directive is set and this is one client more... close the
             // connection. Note that we create the client instead to check before
@@ -107,7 +109,8 @@ pub fn accept_handler(el: &mut EventLoop, fd: i32, mask: Mask) {
     }
 }
 
-pub fn send_reply_to_client(el: &mut EventLoop, fd: i32, mask: Mask) {
+pub fn send_reply_to_client(fd: i32, mask: Mask) {
+    log(LogLevel::Verbose, "send_reply_to_client entered");
     let clients = clients_read();
     let client_r = clients.iter().filter(|e| e.read().unwrap().fd() == fd).nth(0).expect("client not found");
     let mut client = client_r.write().unwrap();
@@ -115,11 +118,76 @@ pub fn send_reply_to_client(el: &mut EventLoop, fd: i32, mask: Mask) {
     // Use writev() if we have enough buffers to send
     // TODO:
 
-    
-    todo!()
+    let mut obj_len: usize = 0;
+    let mut n_written: isize = 0;
+    let mut tot_written: usize = 0;
+    while client.reply.len() > 0 {
+        // TODO: glue output buf
+
+        match client.reply.front().unwrap().borrow() {
+            RedisObject::String { ptr } => {
+                match ptr {
+                    StringStorageType::String(s) => {
+                        let bytes = s.as_bytes();
+                        obj_len =  bytes.len();
+                        if obj_len == 0 {
+                            client.reply.pop_front();
+                            continue;
+                        }
+
+                        if client.flags.is_master() {
+                            // Don't reply to a master
+                            n_written = obj_len as isize - client.sent_len as isize;
+                        } else {
+                            unsafe {
+                                n_written = write(client.fd(), &bytes[client.sent_len] as *const _ as *const c_void, obj_len - client.sent_len);
+                            }
+                            if n_written < 0 { break; }
+                        }
+
+                        client.sent_len += n_written as usize;
+                        tot_written += n_written as usize;
+                        // If we fully sent the object on head go to the next one
+                        if client.sent_len == obj_len {
+                            client.reply.pop_front();
+                            client.sent_len = 0;
+                        }
+
+                        // Note that we avoid to send more thank REDIS_MAX_WRITE_PER_EVENT
+                        // bytes, in a single threaded server it's a good idea to serve
+                        // other clients as well, even if a very large request comes from
+                        // super fast link that is always able to accept data (in real world
+                        // scenario think about 'KEYS *' against the loopback interface)
+                        if tot_written > MAX_WRITE_PER_EVENT { break; }
+                    },
+                    StringStorageType::Integer(n) => {},
+                }
+            },
+            _ => {},
+        }
+    }
+
+    if n_written == -1 {
+        if error() == EAGAIN {
+            n_written = 0;
+        } else {
+            log(LogLevel::Verbose, &format!("Error writing to client: {}", unsafe { *strerror(error()) }));
+            // TODO: free client?
+            return;
+        }
+    }
+
+    if tot_written > 0 {
+        client.last_interaction = timestamp().as_secs();
+    }
+    if client.reply.len() == 0 {
+        client.sent_len = 0;
+        delete_file_event(client.fd(), Mask::Writable);
+    }
+    log(LogLevel::Verbose, "send_reply_to_client left");
 }
 
-pub fn read_query_from_client(_el: &mut EventLoop, fd: i32, _mask: Mask) {
+pub fn read_query_from_client(fd: i32, _mask: Mask) {
     let clients = clients_read();
     let client_r = clients.iter().filter(|e| e.read().unwrap().fd() == fd).nth(0).expect("client not found");
     let mut client = client_r.write().unwrap();

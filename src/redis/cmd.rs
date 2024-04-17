@@ -1,17 +1,17 @@
 use std::{collections::HashMap, ops::BitOr, sync::Arc};
 use once_cell::sync::Lazy;
-use crate::redis::obj::PONG;
+use crate::{redis::obj::PONG, util::{log, LogLevel}};
 
 use super::{client::RedisClient, server_write};
 
 pub static MAX_SIZE_INLINE_CMD: usize = 1024 * 1024 * 256;  // max bytes in inline command
-static CMD_TABLE: Lazy<HashMap<&str, RedisCommand>> = Lazy::new(|| {
+static CMD_TABLE: Lazy<HashMap<&str, Arc<RedisCommand>>> = Lazy::new(|| {
     HashMap::from([
-        ("get", RedisCommand { name: "get", proc: Arc::new(get_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 }),
-        ("set", RedisCommand { name: "set", proc: Arc::new(set_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 }),
-        ("ping", RedisCommand { name: "ping", proc: Arc::new(ping_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 }),
-        ("exec", RedisCommand { name: "exec", proc: Arc::new(exec_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 }),
-        ("discard", RedisCommand { name: "discard", proc: Arc::new(discard_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 }),
+        ("get", Arc::new(RedisCommand { name: "get", proc: Arc::new(get_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("set", Arc::new(RedisCommand { name: "set", proc: Arc::new(set_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("ping", Arc::new(RedisCommand { name: "ping", proc: Arc::new(ping_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("exec", Arc::new(RedisCommand { name: "exec", proc: Arc::new(exec_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("discard", Arc::new(RedisCommand { name: "discard", proc: Arc::new(discard_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
     ])
 });
 
@@ -91,8 +91,8 @@ impl RedisCommand {
     }
 }
 
-pub fn lookup_command(name: &str) -> Option<&RedisCommand> {
-    CMD_TABLE.get(name)
+pub fn lookup_command(name: &str) -> Option<Arc<RedisCommand>> {
+    CMD_TABLE.get(name).map(|e| e.clone())
 }
 
 fn get_command(c: &mut RedisClient) {
@@ -125,11 +125,32 @@ pub fn discard_command(c: &mut RedisClient) {
 }
 
 /// Call() is the core of Redis execution of a command
-pub fn call(c: &mut RedisClient, cmd: &RedisCommand) {
+pub fn call(c: &mut RedisClient, cmd: Arc<RedisCommand>) {
+    log(LogLevel::Verbose, "call entered");
     let f = &cmd.proc;
     f(c);
 
+    log(LogLevel::Verbose, "call ing");
     // TODO
 
     server_write().stat_numcommands += 1;
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::redis::obj::{RedisObject, StringStorageType};
+
+    use super::*;
+
+    #[test]
+    fn lookup_command_test() {
+        assert!(lookup_command("ping").is_some());
+
+        let a = Arc::new(RedisObject::String { ptr: StringStorageType::String("ping".to_string()) });
+        let b = a.string().unwrap().string().unwrap();
+        assert!(lookup_command(b).is_some());
+
+        let a = "ping".to_string();
+        assert!(lookup_command(&a).is_some());
+    }
 }

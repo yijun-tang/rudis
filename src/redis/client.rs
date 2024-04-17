@@ -2,7 +2,7 @@ use std::{collections::{HashSet, LinkedList}, ops::Deref, sync::{Arc, RwLock, Rw
 use libc::close;
 use once_cell::sync::Lazy;
 
-use crate::{ae::{el::el_write, handler::{read_query_from_client, send_reply_to_client}, EventLoop, Mask}, anet::{nonblock, tcp_no_delay}, redis::{cmd::lookup_command, server_read, server_write}, util::{log, timestamp, LogLevel}, zmalloc::used_memory};
+use crate::{ae::{create_file_event, delete_file_event, handler::{read_query_from_client, send_reply_to_client}, Mask}, anet::{nonblock, tcp_no_delay}, redis::{cmd::lookup_command, server_read, server_write}, util::{log, timestamp, LogLevel}, zmalloc::used_memory};
 use super::{cmd::{call, RedisCommand, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType}, RedisDB, ReplState};
 
 pub struct ClientFlags(u8);
@@ -97,8 +97,8 @@ pub struct RedisClient {
     mbargv: Vec<Arc<RedisObject>>,
     bulk_len: i32,                  // bulk read len. -1 if not in bulk read mode
     multi_bulk: i32,                // multi bulk command format active
-    sent_len: usize,
-    reply: LinkedList<Arc<RedisObject>>,
+    pub sent_len: usize,
+    pub reply: LinkedList<Arc<RedisObject>>,
     pub flags: ClientFlags,
     pub last_interaction: u64,          // time of the last interaction, used for timeout (in seconds)
     authenticated: bool,            // when requirepass is non-NULL
@@ -120,8 +120,8 @@ impl Drop for RedisClient {
         // this, because this call adds the READABLE event.
         // TODO: blocked
 
-        el_write().delete_file_event(self.fd, Mask::Readable);
-        el_write().delete_file_event(self.fd, Mask::Writable);
+        delete_file_event(self.fd, Mask::Readable);
+        delete_file_event(self.fd, Mask::Writable);
         unsafe { close(self.fd); }
 
         // Remove from the list of clients waiting for swapped keys
@@ -145,7 +145,7 @@ impl RedisClient {
         self.fd
     }
 
-    pub fn create(el: &mut EventLoop, fd: i32) -> Result<Arc<RwLock<RedisClient>>, String> {
+    pub fn create(fd: i32) -> Result<Arc<RwLock<RedisClient>>, String> {
         match nonblock(fd) {
             Ok(_) => {},
             Err(e) => { return Err(e); },
@@ -174,7 +174,7 @@ impl RedisClient {
         };
         c.select_db(0);
         let c = Arc::new(RwLock::new(c));
-        el.create_file_event(fd, Mask::Readable, Arc::new(read_query_from_client))?;
+        create_file_event(fd, Mask::Readable, Arc::new(read_query_from_client))?;
         clients_write().push_back(c.clone());
         Ok(c)
     }
@@ -237,6 +237,7 @@ impl RedisClient {
         if self.flags.is_blocked() || self.flags.is_io_wait() {
             return;
         }
+        log(LogLevel::Verbose, &format!("process_input_buf entered: {}", self.bulk_len));
         if self.bulk_len == -1 {
             if self.query_buf.contains("\n") {
                 // Read the first line of the query
@@ -244,9 +245,11 @@ impl RedisClient {
                 let mut iter = query_buf_c.lines();
                 let query = iter.next().expect("first query doesn't exist");
                 let remaining: Vec<&str> = iter.collect();
-                self.query_buf = remaining.join("\r\n");
                 if self.query_buf.ends_with("\n") {
+                    self.query_buf = remaining.join("\r\n");
                     self.query_buf.push_str("\r\n");
+                } else {
+                    self.query_buf = remaining.join("\r\n");
                 }
 
                 // Now we can split the query in arguments
@@ -291,9 +294,11 @@ impl RedisClient {
                     return;
                 }
                 let remaining: Vec<&str> = iter.collect();
-                self.query_buf = remaining.join("\r\n");
                 if self.query_buf.ends_with("\n") {
+                    self.query_buf = remaining.join("\r\n");
                     self.query_buf.push_str("\r\n");
+                } else {
+                    self.query_buf = remaining.join("\r\n");
                 }
 
                 self.argv.push(Arc::new(RedisObject::String { ptr: StringStorageType::String(arg.to_string()) }));
@@ -411,6 +416,7 @@ impl RedisClient {
         // Now lookup the command and check ASAP about trivial error conditions
         // such wrong arity, bad command name and so forth.
         let cmd = lookup_command(name);
+        log(LogLevel::Verbose, &format!("lookup: {} -> {}", name, cmd.is_none()));
         match cmd {
             None => {
                 self.add_reply_str(&format!("-ERR unknown command '{}'\r\n", name));
@@ -456,9 +462,11 @@ impl RedisClient {
                         let mut iter = query_buf_c.lines();
                         let arg = iter.next().expect("bulk arg doesn't exist");
                         let remaining: Vec<&str> = iter.collect();
-                        self.query_buf = remaining.join("\r\n");
                         if self.query_buf.ends_with("\n") {
+                            self.query_buf = remaining.join("\r\n");
                             self.query_buf.push_str("\r\n");
+                        } else {
+                            self.query_buf = remaining.join("\r\n");
                         }
 
                         self.argv.push(Arc::new(RedisObject::String { ptr: StringStorageType::String(arg.to_string()) }));
@@ -487,6 +495,7 @@ impl RedisClient {
                 } else {
                     // TODO: vm
                     call(self, cmd);
+                    log(LogLevel::Verbose, "process_command ing");
                 }
 
                 // Prepare the client for the next command
@@ -497,13 +506,16 @@ impl RedisClient {
     }
 
     pub fn add_reply(&mut self, obj: Arc<RedisObject>) {
+        log(LogLevel::Verbose, "add_reply entered");
         if self.reply.is_empty() &&
             (self.repl_state == ReplState::None ||
              self.repl_state == ReplState::Online) &&
-            el_write().create_file_event(self.fd, Mask::Writable, 
+            create_file_event(self.fd, Mask::Writable, 
                 Arc::new(send_reply_to_client)).is_err() {
             return;
         }
+
+        log(LogLevel::Verbose, "add_reply ing");
 
         // TODO: vm related
 

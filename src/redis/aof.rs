@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, io::{BufRead, BufReader, Read}, process::exit, sync::Arc};
+use std::{borrow::Borrow, fs::OpenOptions, io::{BufRead, BufReader, Read}, ops::Deref, process::exit, sync::Arc};
 use crate::{redis::RedisClient, util::{log, LogLevel}, zmalloc::used_memory};
 use super::{cmd::lookup_command, obj::{try_object_encoding, try_object_sharing, RedisObject, StringStorageType}, RedisServer};
 
@@ -82,25 +82,29 @@ impl RedisServer {
 
                         // Command lookup
                         let name = argv[0].string().unwrap().string().unwrap();
-                        let cmd = lookup_command(name);
-                        if cmd.is_none() {
-                            log(LogLevel::Warning, &format!("Unknown command '{}' reading the append only file", name));
-                            exit(1);
+                        match lookup_command(name) {
+                            None => {
+                                log(LogLevel::Warning, &format!("Unknown command '{}' reading the append only file", name));
+                                exit(1);
+                            },
+                            Some(cmd) => {
+                                // Try object sharing and encoding
+                                if self.share_objects {
+                                    for j in 1..argc {
+                                        try_object_sharing(argv[j].clone());
+                                    }
+                                }
+                                if cmd.is_bulk() {
+                                    try_object_encoding(argv[argc - 1].clone());
+                                }
+
+                                // Run the command in the context of a fake client
+                                fake_client.set_argv(argv.clone());
+                                cmd.proc()(&mut fake_client);
+                            },
                         }
 
-                        // Try object sharing and encoding
-                        if self.share_objects {
-                            for j in 1..argc {
-                                try_object_sharing(argv[j].clone());
-                            }
-                        }
-                        if cmd.unwrap().is_bulk() {
-                            try_object_encoding(argv[argc - 1].clone());
-                        }
-
-                        // Run the command in the context of a fake client
-                        fake_client.set_argv(argv.clone());
-                        cmd.unwrap().proc()(&mut fake_client);
+                        
                         // Discard the reply objects list from the fake client
 
                         // Clean up, ready for the next command

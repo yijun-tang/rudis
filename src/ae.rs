@@ -3,8 +3,8 @@
 //! it in form of a library for easy reuse.
 
 use std::{any::Any, ops::{BitAnd, BitOr, Deref}, sync::{Arc, RwLock}};
-use crate::{redis::client::RedisClient, util::{add_ms_to_now, get_time_ms, log, LogLevel}};
-use self::{el::{before_sleep_r, el_read, el_write, stop_read, stop_write}, io_event::{api_create, ApiState}};
+use crate::util::{add_ms_to_now, get_time_ms, log, LogLevel};
+use self::{el::{api_data_read, api_data_write, events_read, events_write, fired_read, max_fd_r, max_fd_w, tevent_head_r, tevent_head_w, tevent_nid_r, tevent_nid_w}, io_event::ApiState};
 
 pub mod el;
 pub mod handler;
@@ -13,14 +13,10 @@ const SET_SIZE: usize = 1024 * 10;    // Max number of fd supported
 
 static NO_MORE: i32 = -1;
 
-type FileProc = Arc<dyn Fn(&mut EventLoop, i32, Mask) -> () + Sync + Send>;
-type TimeProc = Arc<dyn Fn(&mut EventLoop, u128, Option<Arc<dyn Any + Sync + Send>>) -> i32 + Sync + Send>;
-type EventFinalizerProc = Arc<dyn Fn(&mut EventLoop, Option<Arc<dyn Any + Sync + Send>>) -> () + Sync + Send>;
+type FileProc = Arc<dyn Fn(i32, Mask) -> () + Sync + Send>;
+type TimeProc = Arc<dyn Fn(u128, Option<Arc<dyn Any + Sync + Send>>) -> i32 + Sync + Send>;
+type EventFinalizerProc = Arc<dyn Fn(Option<Arc<dyn Any + Sync + Send>>) -> () + Sync + Send>;
 pub type BeforeSleepProc = Arc<dyn Fn() -> () + Sync + Send>;
-
-fn TODO(el: &mut EventLoop, fd: i32, mask: Mask) {
-    todo!()
-}
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct EventFlag(u8);
@@ -63,7 +59,7 @@ impl BitAnd for EventFlag {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Mask {
     None,
     Readable,
@@ -129,345 +125,461 @@ pub struct FiredEvent {
     mask: Mask,
 }
 
-/// State of an event based program.
-pub struct EventLoop {
-    max_fd: i32,
-    time_event_next_id: u128,
-    events: Vec<FileEvent>,  // Registered events
-    fired: Vec<FiredEvent>,  // Fired events
-    time_event_head: Option<Arc<RwLock<TimeEvent>>>,
-    api_data: Arc<RwLock<ApiState>>,  // This is used for polling API specific data
+pub fn create_file_event(fd: i32, mask: Mask, proc: FileProc) -> Result<(), String> {
+    log(LogLevel::Verbose, &format!("create_file_event entered {}", fd));
+
+    if fd >= SET_SIZE as i32 {
+        return Err(format!("fd should be less than {}", SET_SIZE));
+    }
+    api_data_read().add_event(fd, events_read()[fd as usize].mask, mask)?;
+    let fe = &mut events_write()[fd as usize];
+    fe.mask = fe.mask | mask;
+    if mask.is_readable() {
+        fe.r_file_proc = proc.clone();
+    }
+    if mask.is_writable() {
+        fe.w_file_proc = proc;
+    }
+    if fd > *max_fd_r() {
+        *max_fd_w() = fd;
+    }
+
+    log(LogLevel::Verbose, "create_file_event left");
+
+    Ok(())
+}
+pub fn delete_file_event(fd: i32, mask: Mask) {
+    log(LogLevel::Verbose, "delete_file_event entered");
+    if fd >= SET_SIZE as i32 {
+        return;
+    }
+    
+    let old = events_read()[fd as usize].mask;
+    if old == Mask::None {
+        return;
+    }
+    events_write()[fd as usize].mask.disable(mask);
+
+    if fd == *max_fd_r() && events_read()[fd as usize].mask == Mask::None {
+        let mut j = *max_fd_r() - 1;
+        while j >= 0 {
+            if events_read()[j as usize].mask != Mask::None {
+                break;
+            }
+            j -= 1;
+        }
+        *max_fd_w() = j;
+    }
+
+    match api_data_read().del_event(fd, old, mask) {
+        Ok(_) => {},
+        Err(err) => {
+            eprintln!("{err}");
+        }
+    }
+
+    log(LogLevel::Verbose, "delete_file_event left");
 }
 
-impl EventLoop {
-    pub fn create() -> Result<EventLoop, String> {
-        let api_state = api_create()?;
-        let mut event_loop = EventLoop {
-            max_fd: -1,
-            time_event_next_id: 0,
-            events: Vec::with_capacity(SET_SIZE),
-            fired: Vec::with_capacity(SET_SIZE),
-            time_event_head: None,
-            api_data: Arc::new(RwLock::new(api_state)),
-        };
-        for _ in 0..SET_SIZE {
-            event_loop.events.push(FileEvent { mask: Mask::None, r_file_proc: Arc::new(TODO), w_file_proc: Arc::new(TODO) });
-            event_loop.fired.push(FiredEvent { fd: -1, mask: Mask::None });
-        }
 
-        Ok(event_loop)
-    }
+pub fn create_time_event(milliseconds: u128, proc: TimeProc, 
+    client_data: Option<Arc<dyn Any + Sync + Send>>, finalizer_proc: Option<EventFinalizerProc>) -> u128 {
+    let id = *tevent_nid_r();
+    *tevent_nid_w() += 1;
+    let te = Arc::new(RwLock::new(TimeEvent {
+        id,
+        when_ms: add_ms_to_now(milliseconds),
+        time_proc: proc,
+        finalizer_proc,
+        client_data,
+        next: tevent_head_w().take(),
+    }));
+    *tevent_head_w() = Some(te);
 
-    pub fn create_file_event(&mut self, fd: i32, mask: Mask, proc: FileProc) -> Result<(), String> {
-
-        if fd >= SET_SIZE as i32 {
-            return Err(format!("fd should be less than {}", SET_SIZE));
-        }
-        self.api_data.read().unwrap().add_event(fd, self.events[fd as usize].mask, mask)?;
-        let fe = &mut self.events[fd as usize];
-        fe.mask = fe.mask | mask;
-        if fe.mask.is_readable() {
-            fe.r_file_proc = proc.clone();
-        }
-        if fe.mask.is_writable() {
-            fe.w_file_proc = proc;
-        }
-        if fd > self.max_fd {
-            self.max_fd = fd;
-        }
-
-        Ok(())
-    }
-
-    pub fn delete_file_event(&mut self, fd: i32, mask: Mask) {
-        log(LogLevel::Verbose, "delete_file_event entered");
-        if fd >= SET_SIZE as i32 {
-            return;
-        }
-        let fe = &mut self.events[fd as usize];
-        if fe.mask == Mask::None {
-            return;
-        }
-        fe.mask.disable(mask);
-
-        if fd == self.max_fd && fe.mask == Mask::None {
-            let mut j = self.max_fd - 1;
-            while j >= 0 {
-                if self.events[j as usize].mask != Mask::None {
-                    break;
-                }
-                j -= 1;
-            }
-            self.max_fd = j;
-        }
-
-        match self.api_data.read().unwrap().del_event(fd, self.events[fd as usize].mask, mask) {
-            Ok(_) => {},
-            Err(err) => {
-                eprintln!("{err}");
-            }
-        }
-
-        log(LogLevel::Verbose, "delete_file_event left");
-    }
-
-    pub fn create_time_event(&mut self, milliseconds: u128, proc: TimeProc, 
-        client_data: Option<Arc<dyn Any + Sync + Send>>, finalizer_proc: Option<EventFinalizerProc>) -> u128 {
-        let id = self.time_event_next_id;
-        self.time_event_next_id += 1;
-        let te = Arc::new(RwLock::new(TimeEvent {
-            id,
-            when_ms: add_ms_to_now(milliseconds),
-            time_proc: proc,
-            finalizer_proc,
-            client_data,
-            next: self.time_event_head.take(),
-        }));
-        self.time_event_head = Some(te);
-
-        id
-    }
-
-    pub fn delete_time_event(&mut self, id: u128) -> Result<(), String> {
-        let mut te = self.time_event_head.clone();
-        let mut prev: Option<Arc<RwLock<TimeEvent>>> = None;
-        while let Some(e) = te.clone() {
-            match e.deref().read() {
-                Ok(r) => {
-                    if r.id == id {
-                        match prev {
-                            Some(ref mut p) => {
-                                p.deref().write().unwrap().next = e.deref().read().unwrap().next.clone();
-                            },
-                            None => {
-                                self.time_event_head = e.deref().read().unwrap().next.clone();
-                            },
-                        }
-                        if let Some(ref f) = e.deref().read().unwrap().finalizer_proc {
-                            f(self, e.deref().write().unwrap().client_data.take());
-                        }
-                        return Ok(());
-                    }
-                },
-                Err(e) => { return Err(e.to_string()); },
-            }
-            prev = te;
-            te = e.deref().read().unwrap().next.clone();
-        }
-
-        Err(format!("NO event with the specified ID ({id}) found"))
-    }
-
-    /// Process every pending time event, then every pending file event
-    /// (that may be registered by time event callbacks just processed).
-    /// Without special flags the function sleeps until some file event
-    /// fires, or when the next time event occurrs (if any).
-    /// 
-    /// If flags is 0, the function does nothing and returns.
-    /// if flags has AE_ALL_EVENTS set, all the kind of events are processed.
-    /// if flags has AE_FILE_EVENTS set, file events are processed.
-    /// if flags has AE_TIME_EVENTS set, time events are processed.
-    /// if flags has AE_DONT_WAIT set the function returns ASAP until all
-    /// the events that's possible to process without to wait are processed.
-    /// 
-    /// The function returns the number of events processed.
-    pub fn process_events(&mut self, flags: EventFlag) -> u32 {
-        let mut processed = 0u32;
-
-        // Nothing to do? return ASAP
-        if (flags & EventFlag::all_events()) == EventFlag::none() {
-            return processed;
-        }
-
-        // Note that we want call select() even if there are no
-        // file events to process as long as we want to process time
-        // events, in order to sleep until the next time event is ready
-        // to fire. 
-        if self.max_fd != -1 || (flags.contains_time_event() && flags.is_waiting()) {
-            let mut shortest: Option<Arc<RwLock<TimeEvent>>> = None;
-            let mut _time_val_us: Option<u128> = None;
-
-            if flags.contains_time_event() && flags.is_waiting() {
-                shortest = self.search_nearest_timer();
-            }
-            if let Some(shrtest) = shortest {
-                // Calculate the time missing for the nearest
-                // timer to fire.
-                let now_ms = get_time_ms();
-                if shrtest.deref().read().unwrap().when_ms < now_ms {
-                    _time_val_us = Some(0);
-                } else {
-                    _time_val_us = Some((shrtest.deref().read().unwrap().when_ms - now_ms) * 1000);
-                }
-            } else {
-                // If we have to check for events but need to return
-                // ASAP because of AE_DONT_WAIT we need to set the timeout
-                // to zero
-                if !flags.is_waiting() {
-                    _time_val_us = Some(0);
-                } else {
-                    // Otherwise we can block
-                    // wait forever
-                    _time_val_us = None;
-                }
-            }
-
-            let num_events = self.api_data.write().unwrap().poll(&mut self.fired, _time_val_us);
-            for j in 0..num_events {
-                let fd = self.fired[j as usize].fd;
-                let mask = self.fired[j as usize].mask;
-                let fe = self.events[fd as usize].clone();
-                let mut rfired = false;
-
-                // note the fe->mask & mask & ... code: maybe an already processed
-                // event removed an element that fired and we still didn't
-                // processed, so we check if the event is still valid.
-                if fe.mask.is_readable() && mask.is_readable() {
-                    rfired = true;
-                    let f = fe.r_file_proc.clone();
-                    f(self, fd, mask);
-                }
-                if fe.mask.is_writable() && mask.is_writable() {
-                    if !rfired || !Arc::ptr_eq(&fe.r_file_proc, &fe.w_file_proc) {
-                        let f = fe.w_file_proc.clone();
-                        f(self, fd, mask);
-                    }
-                }
-                processed += 1;
-            }
-        }
-        // Check time events
-        if flags.contains_time_event() {
-            processed += self.process_time_events();
-        }
-        
-        processed
-    }
-
-    /// Wait for millseconds until the given file descriptor becomes
-    /// writable/readable/exception
-    #[cfg(target_os = "macos")]
-    pub fn wait(fd: i32, mask: Mask, milliseconds: u128) -> Result<Mask, i32> {
-        use std::mem::zeroed;
-        use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
-
-        let mut timeout = timeval { tv_sec: (milliseconds / 1000) as i64, tv_usec: ((milliseconds % 1000) * 1000) as i32 };
-        let mut ret_mask = Mask::None;
-        let mut ret_val = 0;
-        let mut rfds: fd_set;
-        let mut wfds: fd_set;
-        let mut efds: fd_set;
-
-        unsafe {
-            rfds = zeroed();
-            wfds = zeroed();
-            efds = zeroed();
-            FD_ZERO(&mut rfds);
-            FD_ZERO(&mut wfds);
-            FD_ZERO(&mut efds);
-            if mask.is_readable() {
-                FD_SET(fd, &mut rfds);
-            }
-            if mask.is_writable() {
-                FD_SET(fd, &mut wfds);
-            }
-            ret_val = select(fd + 1, &mut rfds, &mut wfds, &mut efds, &mut timeout);
-            if ret_val > 0 {
-                if FD_ISSET(fd, &mut rfds) {
-                    ret_mask = ret_mask | Mask::Readable;
-                }
-                if FD_ISSET(fd, &mut wfds) {
-                    ret_mask = ret_mask | Mask::Writable;
-                }
-                Ok(ret_mask)
-            } else {
-                Err(ret_val)
-            }
-        }
-    }
-
-    pub fn get_api_name(&self) -> String {
-        ApiState::name()
-    }
-
-    /// Search the first timer to fire.
-    /// This operation is useful to know how many time the select can be
-    /// put in sleep without to delay any event.
-    /// If there are no timers NULL is returned.
-    /// 
-    /// Note that's O(N) since time events are unsorted.
-    /// Possible optimizations (not needed by Redis so far, but...):
-    /// 1) Insert the event in order, so that the nearest is just the head.
-    ///    Much better but still insertion or deletion of timers is O(N).
-    /// 2) Use a skiplist to have this operation as O(1) and insertion as O(log(N)).
-    fn search_nearest_timer(&self) -> Option<Arc<RwLock<TimeEvent>>> {
-        let mut te = self.time_event_head.clone();
-        let mut nearest: Option<Arc<RwLock<TimeEvent>>> = None;
-
-        while let Some(e) = te.clone() {
-            if let Some(n) = nearest.clone() {
-                if e.deref().read().unwrap().when_ms < n.deref().read().unwrap().when_ms {
-                    nearest = te;
-                }
-            } else {
-                nearest = te;
-            }
-            te = e.deref().read().unwrap().next.clone();
-        }
-
-        nearest
-    }
-
-    fn process_time_events(&mut self) -> u32 {
-        let mut processed = 0u32;
-        let mut te = self.time_event_head.clone();
-        let max_id = self.time_event_next_id - 1;
-
-        while let Some(e) = te.clone() {
-            // How this case happened?
-            if e.deref().read().unwrap().id > max_id {
-                te = e.deref().read().unwrap().next.clone();
-                continue;
-            }
-
-            if e.deref().read().unwrap().when_ms <= get_time_ms() {
-                let id = e.deref().read().unwrap().id;
-                let client_data = e.deref().read().unwrap().client_data.clone();
-                let f = e.deref().read().unwrap().time_proc.clone();
-                let ret_val = f(self, id, client_data);
-                processed += 1;
-                /* After an event is processed our time event list may
-                * no longer be the same, so we restart from head.
-                * Still we make sure to don't process events registered
-                * by event handlers itself in order to don't loop forever.
-                * To do so we saved the max ID we want to handle.
-                *
-                * FUTURE OPTIMIZATIONS:
-                * Note that this is NOT great algorithmically. Redis uses
-                * a single time event so it's not a problem but the right
-                * way to do this is to add the new elements on head, and
-                * to flag deleted elements in a special way for later
-                * deletion (putting references to the nodes to delete into
-                * another linked list). */
-                if ret_val != NO_MORE {
-                    e.deref().write().unwrap().when_ms = add_ms_to_now(ret_val as u128);
-                } else {
-                    match self.delete_time_event(id) {
-                        Ok(_) => {},
-                        Err(err) => {
-                            eprintln!("{err}");
+    id
+}
+pub fn delete_time_event(id: u128) -> Result<(), String> {
+    let mut te = tevent_head_r().clone();
+    let mut prev: Option<Arc<RwLock<TimeEvent>>> = None;
+    while let Some(e) = te.clone() {
+        match e.deref().read() {
+            Ok(r) => {
+                if r.id == id {
+                    match prev {
+                        Some(ref mut p) => {
+                            p.deref().write().unwrap().next = e.deref().read().unwrap().next.clone();
+                        },
+                        None => {
+                            *tevent_head_w() = e.deref().read().unwrap().next.clone();
                         },
                     }
+                    if let Some(ref f) = e.deref().read().unwrap().finalizer_proc {
+                        f(e.deref().write().unwrap().client_data.take());
+                    }
+                    return Ok(());
                 }
-                te = self.time_event_head.clone();
-            } else {
-                te = e.deref().read().unwrap().next.clone();
-            }
+            },
+            Err(e) => { return Err(e.to_string()); },
         }
-        processed
+        prev = te;
+        te = e.deref().read().unwrap().next.clone();
     }
 
+    Err(format!("NO event with the specified ID ({id}) found"))
+}
 
+/// Wait for millseconds until the given file descriptor becomes
+/// writable/readable/exception
+#[cfg(target_os = "macos")]
+pub fn wait(fd: i32, mask: Mask, milliseconds: u128) -> Result<Mask, i32> {
+    use std::mem::zeroed;
+    use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
+
+    let mut timeout = timeval { tv_sec: (milliseconds / 1000) as i64, tv_usec: ((milliseconds % 1000) * 1000) as i32 };
+    let mut ret_mask = Mask::None;
+    let mut ret_val = 0;
+    let mut rfds: fd_set;
+    let mut wfds: fd_set;
+    let mut efds: fd_set;
+
+    unsafe {
+        rfds = zeroed();
+        wfds = zeroed();
+        efds = zeroed();
+        FD_ZERO(&mut rfds);
+        FD_ZERO(&mut wfds);
+        FD_ZERO(&mut efds);
+        if mask.is_readable() {
+            FD_SET(fd, &mut rfds);
+        }
+        if mask.is_writable() {
+            FD_SET(fd, &mut wfds);
+        }
+        ret_val = select(fd + 1, &mut rfds, &mut wfds, &mut efds, &mut timeout);
+        if ret_val > 0 {
+            if FD_ISSET(fd, &mut rfds) {
+                ret_mask = ret_mask | Mask::Readable;
+            }
+            if FD_ISSET(fd, &mut wfds) {
+                ret_mask = ret_mask | Mask::Writable;
+            }
+            Ok(ret_mask)
+        } else {
+            Err(ret_val)
+        }
+    }
+}
+
+
+/// Search the first timer to fire.
+/// This operation is useful to know how many time the select can be
+/// put in sleep without to delay any event.
+/// If there are no timers NULL is returned.
+/// 
+/// Note that's O(N) since time events are unsorted.
+/// Possible optimizations (not needed by Redis so far, but...):
+/// 1) Insert the event in order, so that the nearest is just the head.
+///    Much better but still insertion or deletion of timers is O(N).
+/// 2) Use a skiplist to have this operation as O(1) and insertion as O(log(N)).
+pub fn search_nearest_timer() -> Option<Arc<RwLock<TimeEvent>>> {
+    let mut te = tevent_head_r().clone();
+    let mut nearest: Option<Arc<RwLock<TimeEvent>>> = None;
+
+    while let Some(e) = te.clone() {
+        if let Some(n) = nearest.clone() {
+            if e.deref().read().unwrap().when_ms < n.deref().read().unwrap().when_ms {
+                nearest = te;
+            }
+        } else {
+            nearest = te;
+        }
+        te = e.deref().read().unwrap().next.clone();
+    }
+
+    nearest
+}
+
+
+/// Process every pending time event, then every pending file event
+/// (that may be registered by time event callbacks just processed).
+/// Without special flags the function sleeps until some file event
+/// fires, or when the next time event occurrs (if any).
+/// 
+/// If flags is 0, the function does nothing and returns.
+/// if flags has AE_ALL_EVENTS set, all the kind of events are processed.
+/// if flags has AE_FILE_EVENTS set, file events are processed.
+/// if flags has AE_TIME_EVENTS set, time events are processed.
+/// if flags has AE_DONT_WAIT set the function returns ASAP until all
+/// the events that's possible to process without to wait are processed.
+/// 
+/// The function returns the number of events processed.
+pub fn process_events(flags: EventFlag) -> u32 {
+    let mut processed = 0u32;
+
+    // Nothing to do? return ASAP
+    if (flags & EventFlag::all_events()) == EventFlag::none() {
+        return processed;
+    }
+
+    // Note that we want call select() even if there are no
+    // file events to process as long as we want to process time
+    // events, in order to sleep until the next time event is ready
+    // to fire. 
+    if *max_fd_r() != -1 || (flags.contains_time_event() && flags.is_waiting()) {
+        let mut shortest: Option<Arc<RwLock<TimeEvent>>> = None;
+        let mut _time_val_us: Option<u128> = None;
+
+        if flags.contains_time_event() && flags.is_waiting() {
+            shortest = search_nearest_timer();
+        }
+        if let Some(shrtest) = shortest {
+            // Calculate the time missing for the nearest
+            // timer to fire.
+            let now_ms = get_time_ms();
+            if shrtest.deref().read().unwrap().when_ms < now_ms {
+                _time_val_us = Some(0);
+            } else {
+                _time_val_us = Some((shrtest.deref().read().unwrap().when_ms - now_ms) * 1000);
+            }
+        } else {
+            // If we have to check for events but need to return
+            // ASAP because of AE_DONT_WAIT we need to set the timeout
+            // to zero
+            if !flags.is_waiting() {
+                _time_val_us = Some(0);
+            } else {
+                // Otherwise we can block
+                // wait forever
+                _time_val_us = None;
+            }
+        }
+
+        let num_events = api_data_write().poll(_time_val_us);
+        for j in 0..num_events {
+            let fd = fired_read()[j as usize].fd;
+            let mask = fired_read()[j as usize].mask;
+            let fe = events_read()[fd as usize].clone();
+            let mut rfired = false;
+
+            // note the fe->mask & mask & ... code: maybe an already processed
+            // event removed an element that fired and we still didn't
+            // processed, so we check if the event is still valid.
+            if fe.mask.is_readable() && mask.is_readable() {
+                rfired = true;
+                let f = fe.r_file_proc.clone();
+                f(fd, mask);
+            }
+            if fe.mask.is_writable() && mask.is_writable() {
+                if !rfired || !Arc::ptr_eq(&fe.r_file_proc, &fe.w_file_proc) {
+                    let f = fe.w_file_proc.clone();
+                    f(fd, mask);
+                }
+            }
+            processed += 1;
+        }
+    }
+    // Check time events
+    if flags.contains_time_event() {
+        processed += process_time_events();
+    }
+    
+    processed
+}
+
+pub fn process_time_events() -> u32 {
+    let mut processed = 0u32;
+    let mut te = tevent_head_r().clone();
+    let max_id = *tevent_nid_r() - 1;
+
+    while let Some(e) = te.clone() {
+        // How this case happened?
+        if e.deref().read().unwrap().id > max_id {
+            te = e.deref().read().unwrap().next.clone();
+            continue;
+        }
+
+        if e.deref().read().unwrap().when_ms <= get_time_ms() {
+            let id = e.deref().read().unwrap().id;
+            let client_data = e.deref().read().unwrap().client_data.clone();
+            let f = e.deref().read().unwrap().time_proc.clone();
+            let ret_val = f(id, client_data);
+            processed += 1;
+            /* After an event is processed our time event list may
+            * no longer be the same, so we restart from head.
+            * Still we make sure to don't process events registered
+            * by event handlers itself in order to don't loop forever.
+            * To do so we saved the max ID we want to handle.
+            *
+            * FUTURE OPTIMIZATIONS:
+            * Note that this is NOT great algorithmically. Redis uses
+            * a single time event so it's not a problem but the right
+            * way to do this is to add the new elements on head, and
+            * to flag deleted elements in a special way for later
+            * deletion (putting references to the nodes to delete into
+            * another linked list). */
+            if ret_val != NO_MORE {
+                e.deref().write().unwrap().when_ms = add_ms_to_now(ret_val as u128);
+            } else {
+                match delete_time_event(id) {
+                    Ok(_) => {},
+                    Err(err) => {
+                        eprintln!("{err}");
+                    },
+                }
+            }
+            te = tevent_head_r().clone();
+        } else {
+            te = e.deref().read().unwrap().next.clone();
+        }
+    }
+    processed
+}
+
+#[cfg(target_os = "linux")]
+mod io_event {
+    use std::mem::zeroed;
+    use libc::{close, epoll_create, epoll_ctl, epoll_event, epoll_wait, strerror, EPOLLIN, EPOLLOUT, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD};
+    use crate::util::{error, log, LogLevel};
+    use super::{el::fired_write, Mask, SET_SIZE};
+
+
+    pub struct ApiState {
+        epfd: i32,
+        events: [epoll_event; SET_SIZE],
+    }
+
+    impl ApiState {
+        pub fn add_event(&self, fd: i32, old: Mask, mut mask: Mask) -> Result<(), String> {
+            log(LogLevel::Verbose, "add_event entered");
+            
+            let mut ee: epoll_event;
+            // If the fd was already monitored for some event, we need a MOD
+            // operation. Otherwise we need an ADD operation.
+            let op = match old {
+                Mask::None => { EPOLL_CTL_ADD },
+                _ => { EPOLL_CTL_MOD },
+            };
+
+            unsafe {
+                ee = zeroed();
+                mask = mask | old;  // Merge old events
+                if mask.is_readable() {
+                    ee.events |= EPOLLIN as u32;
+                }
+                if mask.is_writable() {
+                    ee.events |= EPOLLOUT as u32;
+                }
+                ee.u64 = fd as u64;
+                log(LogLevel::Warning, &format!("add_event op: {}", op));
+                if epoll_ctl(self.epfd, op, fd, &mut ee) == -1 {
+                    log(LogLevel::Warning, &format!("add_event err: {}", *strerror(error())));
+                    return Err(format!("ApiState.add_event: {}", *strerror(error())));
+                }
+            }
+            
+            Ok(())
+        }
+
+        pub fn del_event(&self, fd: i32, mut old: Mask, mask: Mask) -> Result<(), String> {
+            log(LogLevel::Verbose, &format!("del_event entered {:?} - {:?}", old, mask));
+            let mut ee: epoll_event;
+            old.disable(mask);
+
+            unsafe {
+                ee = zeroed();
+                if old.is_readable() {
+                    ee.events |= EPOLLIN as u32;
+                }
+                if old.is_writable() {
+                    ee.events |= EPOLLOUT as u32;
+                }
+                ee.u64 = fd as u64;    // x86 is little endian
+                let ret_val = match old {
+                    Mask::None => {
+                        // Note, Kernel < 2.6.9 requires a non null event pointer even for
+                        // EPOLL_CTL_DEL.
+                        epoll_ctl(self.epfd, EPOLL_CTL_DEL, fd, &mut ee)
+                    },
+                    _ => {
+                        epoll_ctl(self.epfd, EPOLL_CTL_MOD, fd, &mut ee)
+                    },
+                };
+                if ret_val == -1 {
+                    log(LogLevel::Warning, &format!("del_event err: {}", *strerror(error())));
+                    return Err(format!("ApiState.del_event: {}", *strerror(error())));
+                }
+            }
+            
+            Ok(())
+        }
+
+        pub fn poll(&mut self, time_val_us: Option<u128>) -> i32 {
+            let mut ret_val = 0;
+            if let Some(tv_us) = time_val_us {
+                unsafe {
+                    ret_val = epoll_wait(self.epfd, &mut self.events[0], SET_SIZE as i32, (tv_us / 1000) as i32);
+                }
+            } else {
+                unsafe {
+                    ret_val = epoll_wait(self.epfd, &mut self.events[0], SET_SIZE as i32, -1);
+                }
+            }
+
+            let mut num_events = 0;
+            if ret_val > 0 {
+                num_events = ret_val;
+
+                for j in 0..num_events {
+                    let mut mask = Mask::None;
+                    let e = self.events[j as usize];
+
+                    if (e.events & EPOLLIN as u32) != 0 {
+                        mask = mask | Mask::Readable;
+                    }
+                    if (e.events & EPOLLOUT as u32) != 0 {
+                        mask = mask | Mask::Writable;
+                    }
+
+                    fired_write()[j as usize].fd = e.u64 as i32;
+                    fired_write()[j as usize].mask = mask;
+                    log(LogLevel::Verbose, &format!("fd: {:?}, mask: {:?}", e.u64 as i32, mask));
+                }
+            }
+
+            num_events
+        }
+
+        pub fn name() -> String {
+            "epoll".to_string()
+        }
+    }
+
+    impl Drop for ApiState {
+        fn drop(&mut self) {
+            let mut ret_no = -1;
+            let mut err = String::new();
+            unsafe {
+                ret_no = close(self.epfd);
+                err = format!("{}", *strerror(error()));
+            }
+            if ret_no == -1 {
+                eprintln!("ApiState.drop failed: {}", err);
+            }
+        }
+    }
+
+    pub fn api_create() -> Result<ApiState, String> {
+        let mut epfd = -1;
+        let mut err = String::new();
+        unsafe {
+            epfd = epoll_create(1024);  // 1024 is just an hint for the kernel
+            err = format!("{}", *strerror(error()));
+        }
+        if epfd == -1 {
+            return Err(err);
+        }
+        Ok(ApiState { epfd, events: [epoll_event { events: 0, u64: 0  }; SET_SIZE] })
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -610,147 +722,9 @@ mod io_event {
     }
 }
 
-#[cfg(target_os = "linux")]
-mod io_event {
-    use std::mem::zeroed;
-    use libc::{close, epoll_create, epoll_ctl, epoll_event, epoll_wait, strerror, EPOLLIN, EPOLLOUT, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD};
-    use crate::util::error;
-    use super::{FiredEvent, Mask, SET_SIZE};
-
-
-    pub struct ApiState {
-        epfd: i32,
-        events: [epoll_event; SET_SIZE],
-    }
-
-    impl ApiState {
-        pub fn add_event(&self, fd: i32, old: Mask, mut mask: Mask) -> Result<(), String> {
-            let mut ee: epoll_event;
-            // If the fd was already monitored for some event, we need a MOD
-            // operation. Otherwise we need an ADD operation.
-            let op = match Mask::None {
-                Mask::None => { EPOLL_CTL_ADD },
-                _ => { EPOLL_CTL_MOD },
-            };
-
-            unsafe {
-                ee = zeroed();
-                mask = mask | old;  // Merge old events
-                if mask.is_readable() {
-                    ee.events |= EPOLLIN as u32;
-                }
-                if mask.is_writable() {
-                    ee.events |= EPOLLOUT as u32;
-                }
-                ee.u64 = fd as u64;
-                if epoll_ctl(self.epfd, op, fd, &mut ee) == -1 {
-                    return Err(format!("ApiState.add_event: {}", *strerror(error())));
-                }
-            }
-            
-            Ok(())
-        }
-
-        pub fn del_event(&self, fd: i32, mut old: Mask, mask: Mask) -> Result<(), String> {
-            let mut ee: epoll_event;
-            old.disable(mask);
-
-            unsafe {
-                ee = zeroed();
-                if old.is_readable() {
-                    ee.events |= EPOLLIN as u32;
-                }
-                if old.is_writable() {
-                    ee.events |= EPOLLOUT as u32;
-                }
-                ee.u64 = fd as u64;    // x86 is little endian
-                let ret_val = match old {
-                    Mask::None => {
-                        // Note, Kernel < 2.6.9 requires a non null event pointer even for
-                        // EPOLL_CTL_DEL.
-                        epoll_ctl(self.epfd, EPOLL_CTL_DEL, fd, &mut ee)
-                    },
-                    _ => {
-                        epoll_ctl(self.epfd, EPOLL_CTL_MOD, fd, &mut ee)
-                    },
-                };
-                if ret_val == -1 {
-                    return Err(format!("ApiState.del_event: {}", *strerror(error())));
-                }
-            }
-            
-            Ok(())
-        }
-
-        pub fn poll(&mut self, fired: &mut Vec<FiredEvent>, time_val_us: Option<u128>) -> i32 {
-            let mut ret_val = 0;
-            if let Some(tv_us) = time_val_us {
-                unsafe {
-                    ret_val = epoll_wait(self.epfd, &mut self.events[0], SET_SIZE as i32, (tv_us / 1000) as i32);
-                }
-            } else {
-                unsafe {
-                    ret_val = epoll_wait(self.epfd, &mut self.events[0], SET_SIZE as i32, -1);
-                }
-            }
-
-            let mut num_events = 0;
-            if ret_val > 0 {
-                num_events = ret_val;
-
-                for j in 0..num_events {
-                    let mut mask = Mask::None;
-                    let e = &self.events[j as usize];
-
-                    if (e.events & EPOLLIN as u32) != 0 {
-                        mask = mask | Mask::Readable;
-                    }
-                    if (e.events & EPOLLOUT as u32) != 0 {
-                        mask = mask | Mask::Writable;
-                    }
-
-                    fired[j as usize].fd = e.u64 as i32;
-                    fired[j as usize].mask = mask;
-                }
-            }
-
-            num_events
-        }
-
-        pub fn name() -> String {
-            "epoll".to_string()
-        }
-    }
-
-    impl Drop for ApiState {
-        fn drop(&mut self) {
-            let mut ret_no = -1;
-            let mut err = String::new();
-            unsafe {
-                ret_no = close(self.epfd);
-                err = format!("{}", *strerror(error()));
-            }
-            if ret_no == -1 {
-                eprintln!("ApiState.drop failed: {}", err);
-            }
-        }
-    }
-
-    pub fn api_create() -> Result<ApiState, String> {
-        let mut epfd = -1;
-        let mut err = String::new();
-        unsafe {
-            epfd = epoll_create(1024);  // 1024 is just an hint for the kernel
-            err = format!("{}", *strerror(error()));
-        }
-        if epfd == -1 {
-            return Err(err);
-        }
-        Ok(ApiState { epfd, events: [epoll_event { events: 0, u64: 0  }; SET_SIZE] })
-    }
+pub fn get_api_name() -> String {
+    ApiState::name()
 }
-
-
 
 #[cfg(test)]
 mod tests {
