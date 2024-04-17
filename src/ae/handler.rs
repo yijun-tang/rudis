@@ -2,7 +2,7 @@ use std::{any::Any, net::Ipv4Addr, sync::{Arc, RwLock}};
 
 use libc::{c_void, close, read, strerror, write, EAGAIN};
 
-use crate::{anet::accept, redis::{client::{RedisClient, WrappedClient}, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
+use crate::{anet::accept, redis::{client::{clients_read, RedisClient}, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
 
 use super::{EventLoop, Mask};
 
@@ -52,7 +52,7 @@ pub fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Arc<dyn Any
     if loops % 5 == 0 {
         let server = server_read();
         log(LogLevel::Verbose, &format!("{} clients connected ({} slaves), {} bytes in use, {} shared objects", 
-            server.clients().len() - server.slaves().len(), 
+            clients_read().len() - server.slaves().len(), 
             server.slaves().len(),
             used_memory(),
             server.sharing_pool().len()));
@@ -61,7 +61,7 @@ pub fn server_cron(el: &mut EventLoop, id: u128, client_data: Option<Arc<dyn Any
     1000
 }
 
-pub fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<RedisClient>>>, mask: Mask) {
+pub fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<i32>, mask: Mask) {
     let (c_fd, c_ip, c_port) = match accept(fd) {
         Ok((c_fd, c_ip, c_port)) => { (c_fd, c_ip, c_port) },
         Err(e) => {
@@ -76,7 +76,7 @@ pub fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<
             // connection. Note that we create the client instead to check before
             // for this condition, since now the socket is already set in nonblocking
             // mode and we can send an error for free using the Kernel I/O
-            if server_read().max_clients() > 0 && server_read().clients().len() as u32 > server_read().max_clients() {
+            if server_read().max_clients() > 0 && clients_read().len() as u32 > server_read().max_clients() {
                 let err = "-ERR max number of clients reached\r\n";
                 unsafe {
                     // That's a best effort error message, don't check write errors
@@ -97,54 +97,47 @@ pub fn accept_handler(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<
     }
 }
 
-pub fn send_reply_to_client(el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<RedisClient>>>, mask: Mask) {
+pub fn send_reply_to_client(el: &mut EventLoop, fd: i32, priv_data: Option<i32>, mask: Mask) {
     todo!()
 }
 
-pub fn read_query_from_client(_el: &mut EventLoop, fd: i32, priv_data: Option<Arc<RwLock<RedisClient>>>, _mask: Mask) {
-    let mut blocked = false;
-    {
-        log(LogLevel::Verbose, "read_query_from_client entered");
-        let priv_data_c = priv_data.clone().unwrap();
-        let mut client = priv_data_c.write().unwrap();
-        let mut buf = [0u8; IO_BUF_LEN];
-        let mut nread = 0isize;
+pub fn read_query_from_client(_el: &mut EventLoop, fd: i32, c_idx: Option<i32>, _mask: Mask) {
+    let clients = clients_read();
+    let client_r = clients.iter().nth(c_idx.unwrap() as usize).expect("client not found");
+    let mut client = client_r.write().unwrap();
+    let mut buf = [0u8; IO_BUF_LEN];
+    let mut nread = 0isize;
 
-        unsafe {
-            nread = read(fd, &mut buf[0] as *mut _ as *mut c_void, IO_BUF_LEN);
-            if nread == -1 {
-                if error() == EAGAIN {
-                    nread = 0;
-                } else {
-                    log(LogLevel::Verbose, &format!("Reading from client: {}", *strerror(error())));
-                    // TODO: free client?
-                    return;
-                }
-            } else if nread == 0 {
-                log(LogLevel::Verbose, "Client closed connection");
+    unsafe {
+        nread = read(fd, &mut buf[0] as *mut _ as *mut c_void, IO_BUF_LEN);
+        if nread == -1 {
+            if error() == EAGAIN {
+                nread = 0;
+            } else {
+                log(LogLevel::Verbose, &format!("Reading from client: {}", *strerror(error())));
                 // TODO: free client?
                 return;
             }
-        }
-        if nread != 0 {
-            match String::from_utf8(buf.to_vec()) {
-                Ok(s) => {
-                    client.query_buf.push_str(&s);
-                },
-                Err(e) => {
-                    log(LogLevel::Warning, &format!("Parsing bytes from client failed: {}", e));
-                },
-            }
-            client.last_interaction = timestamp().as_secs();
-        } else {
+        } else if nread == 0 {
+            log(LogLevel::Verbose, "Client closed connection");
+            // TODO: free client?
             return;
         }
-        blocked = client.flags.is_blocked();
     }
-    
-    if !blocked {
-        log(LogLevel::Verbose, "read_query_from_client processing");
-        WrappedClient(priv_data.unwrap()).process_input_buf();
+    if nread != 0 {
+        match String::from_utf8(buf.to_vec()) {
+            Ok(s) => {
+                client.query_buf.push_str(&s);
+            },
+            Err(e) => {
+                log(LogLevel::Warning, &format!("Parsing bytes from client failed: {}", e));
+            },
+        }
+        client.last_interaction = timestamp().as_secs();
+    } else {
+        return;
     }
-    log(LogLevel::Verbose, "read_query_from_client left");
+    if !client.flags.is_blocked() {
+        client.process_input_buf();
+    }
 }

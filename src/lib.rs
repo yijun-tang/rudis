@@ -1,4 +1,4 @@
-#![feature(ip_bits)]
+#![feature(ip_bits, linked_list_remove)]
 
 pub mod adlist;
 pub mod ae;

@@ -84,7 +84,6 @@ pub struct RedisServer {
     sharing_pool: HashMap<String, String>,      // Pool used for object sharing
     sharing_pool_size: u32,
     dirty: u128,                                // changes to DB from the last save
-    clients: LinkedList<Arc<RwLock<RedisClient>>>,
     slaves: LinkedList<Arc<RwLock<RedisClient>>>,
     monitors: LinkedList<RedisClient>,
     cron_loops: i32,                                            // number of times the cron function run
@@ -171,7 +170,6 @@ impl RedisServer {
             dbs: Vec::with_capacity(DEFAULT_DBNUM as usize),
             sharing_pool: HashMap::new(),
             dirty: 0,
-            clients: LinkedList::new(),
             slaves: LinkedList::new(),
             monitors: LinkedList::new(),
             cron_loops: 0,
@@ -269,10 +267,6 @@ impl RedisServer {
 
     pub fn io_ready_clients(&self) -> &LinkedList<Arc<RwLock<RedisClient>>> {
         &self.io_ready_clients
-    }
-
-    pub fn clients(&self) -> &LinkedList<Arc<RwLock<RedisClient>>> {
-        &self.clients
     }
 
     pub fn max_clients(&self) -> u32 {

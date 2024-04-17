@@ -1,6 +1,6 @@
-use std::{borrow::BorrowMut, collections::HashMap, ops::BitOr, sync::Arc};
+use std::{collections::HashMap, ops::BitOr, sync::Arc};
 use once_cell::sync::Lazy;
-use super::{client::{RedisClient, WrappedClient}, server_write};
+use super::{client::RedisClient, server_write};
 
 pub static MAX_SIZE_INLINE_CMD: usize = 1024 * 1024 * 256;  // max bytes in inline command
 static CMD_TABLE: Lazy<HashMap<&str, RedisCommand>> = Lazy::new(|| {

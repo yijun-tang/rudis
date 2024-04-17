@@ -13,12 +13,12 @@ const SET_SIZE: usize = 1024 * 10;    // Max number of fd supported
 
 static NO_MORE: i32 = -1;
 
-type FileProc = Arc<dyn Fn(&mut EventLoop, i32, Option<Arc<RwLock<RedisClient>>>, Mask) -> () + Sync + Send>;
+type FileProc = Arc<dyn Fn(&mut EventLoop, i32, Option<i32>, Mask) -> () + Sync + Send>;
 type TimeProc = Arc<dyn Fn(&mut EventLoop, u128, Option<Arc<dyn Any + Sync + Send>>) -> i32 + Sync + Send>;
 type EventFinalizerProc = Arc<dyn Fn(&mut EventLoop, Option<Arc<dyn Any + Sync + Send>>) -> () + Sync + Send>;
 pub type BeforeSleepProc = Arc<dyn Fn(&mut EventLoop) -> () + Sync + Send>;
 
-fn TODO(el: &mut EventLoop, fd: i32, client_data: Option<Arc<RwLock<RedisClient>>>, mask: Mask) {
+fn TODO(el: &mut EventLoop, fd: i32, client_data: Option<i32>, mask: Mask) {
     todo!()
 }
 
@@ -113,7 +113,7 @@ pub struct FileEvent {
     mask: Mask,
     r_file_proc: FileProc,
     w_file_proc: FileProc,
-    client_data: Option<Arc<RwLock<RedisClient>>>,
+    client_data: Option<i32>,
 }
 
 pub struct TimeEvent {
@@ -168,7 +168,7 @@ impl EventLoop {
     }
 
     pub fn create_file_event(&mut self, fd: i32, mask: Mask, proc: FileProc, 
-        client_data: Option<Arc<RwLock<RedisClient>>>) -> Result<(), String> {
+        client_data: Option<i32>) -> Result<(), String> {
 
         if fd >= SET_SIZE as i32 {
             return Err(format!("fd should be less than {}", SET_SIZE));
@@ -333,12 +333,12 @@ impl EventLoop {
                 if fe.mask.is_readable() && mask.is_readable() {
                     rfired = true;
                     let f = fe.r_file_proc.clone();
-                    f(self, fd, fe.client_data.clone(), mask);
+                    f(self, fd, fe.client_data, mask);
                 }
                 if fe.mask.is_writable() && mask.is_writable() {
                     if !rfired || !Arc::ptr_eq(&fe.r_file_proc, &fe.w_file_proc) {
                         let f = fe.w_file_proc.clone();
-                        f(self, fd, fe.client_data.clone(), mask);
+                        f(self, fd, fe.client_data, mask);
                     }
                 }
                 processed += 1;

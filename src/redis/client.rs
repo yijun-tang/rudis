@@ -1,4 +1,7 @@
-use std::{collections::LinkedList, ops::Deref, sync::{Arc, RwLock}};
+use std::{collections::LinkedList, ops::Deref, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
+use libc::close;
+use once_cell::sync::Lazy;
+
 use crate::{ae::{el::el_write, handler::{read_query_from_client, send_reply_to_client}, EventLoop, Mask}, anet::{nonblock, tcp_no_delay}, redis::{cmd::lookup_command, server_read, server_write}, util::{log, timestamp, LogLevel}, zmalloc::used_memory};
 use super::{cmd::{call, RedisCommand, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType}, RedisDB, ReplState};
 
@@ -30,6 +33,14 @@ impl ClientFlags {
         ClientFlags(32)
     }
 
+    pub fn is_slave(&self) -> bool {
+        (self.0 & Self::slave().0) != 0
+    }
+
+    pub fn is_master(&self) -> bool {
+        (self.0 & Self::master().0) != 0
+    }
+
     pub fn is_blocked(&self) -> bool {
         (self.0 & Self::blocked().0) != 0
     }
@@ -53,9 +64,22 @@ pub struct MultiState {
     commands: Vec<MultiCmd>,    // Array of MULTI commands
 }
 
+pub static CLIENTS: Lazy<Box<RwLock<LinkedList<Arc<RwLock<RedisClient>>>>>> = Lazy::new(|| {
+    Box::new(RwLock::new(LinkedList::new()))
+});
+
+pub fn clients_read() -> RwLockReadGuard<'static, LinkedList<Arc<RwLock<RedisClient>>>> {
+    CLIENTS.read().unwrap()
+}
+
+pub fn clients_write() -> RwLockWriteGuard<'static, LinkedList<Arc<RwLock<RedisClient>>>> {
+    CLIENTS.write().unwrap()
+}
+
 /// With multiplexing we need to take per-clinet state.
 /// Clients are taken in a liked list.
 pub struct RedisClient {
+    id: usize,
     fd: i32,
     db: Option<Arc<RedisDB>>,
     pub query_buf: String,
@@ -78,7 +102,31 @@ pub struct RedisClient {
 
 impl Drop for RedisClient {
     fn drop(&mut self) {
-        todo!()
+        log(LogLevel::Verbose, "client dropped entered");
+        // Note that if the client we are freeing is blocked into a blocking
+        // call, we have to set querybuf to NULL *before* to call
+        // unblockClientWaitingData() to avoid processInputBuffer() will get
+        // called. Also it is important to remove the file events after
+        // this, because this call adds the READABLE event.
+        // TODO: blocked
+
+        el_write().delete_file_event(self.fd, Mask::Readable);
+        el_write().delete_file_event(self.fd, Mask::Writable);
+        unsafe { close(self.fd); }
+
+        // Remove from the list of clients waiting for swapped keys
+        // TODO
+
+        // Other cleanup
+        if self.flags.is_slave() {
+            // TODO
+        }
+        if self.flags.is_master() {
+            server_write().master = None;
+            server_write().repl_state = ReplState::Connect;
+        }
+
+        log(LogLevel::Verbose, "client dropped left");
     }
 }
 
@@ -96,7 +144,9 @@ impl RedisClient {
             Ok(_) => {},
             Err(e) => { return Err(e); },
         }
+        let id = clients_read().len();
         let mut c = RedisClient {
+            id,
             fd,
             db: None,
             query_buf: String::new(),
@@ -116,8 +166,8 @@ impl RedisClient {
         };
         c.select_db(0);
         let c = Arc::new(RwLock::new(c));
-        el.create_file_event(fd, Mask::Readable, Arc::new(read_query_from_client), Some(c.clone()))?;
-        server_write().clients.push_back(c.clone());
+        el.create_file_event(fd, Mask::Readable, Arc::new(read_query_from_client), Some(id as i32))?;
+        clients_write().push_back(c.clone());
         Ok(c)
     }
 
@@ -125,6 +175,7 @@ impl RedisClient {
     /// order to load the append only file we need to create a fake client.
     pub fn create_fake_client() -> RedisClient {
         let mut c = RedisClient { 
+            id: todo!(),
             db: None, 
             fd: -1, 
             query_buf: String::new(),
@@ -168,38 +219,27 @@ impl RedisClient {
         self.bulk_len = -1;
         self.multi_bulk = 0;
     }
-}
 
-pub struct WrappedClient(pub Arc<RwLock<RedisClient>>);
-
-impl WrappedClient {
-    pub fn inner(&self) -> Arc<RwLock<RedisClient>> {
-        self.0.clone()
-    }
-
-    pub fn process_input_buf(&self) {
-        log(LogLevel::Verbose, "process_input_buf entered");
-        let mut c = self.0.write().unwrap();
-        log(LogLevel::Verbose, "process_input_buf processing");
+    pub fn process_input_buf(&mut self) {
         // Before to process the input buffer, make sure the client is not
         // waitig for a blocking operation such as BLPOP. Note that the first
         // iteration the client is never blocked, otherwise the processInputBuffer
         // would not be called at all, but after the execution of the first commands
         // in the input buffer the client may be blocked, and the "goto again"
         // will try to reiterate. The following line will make it return asap.
-        if c.flags.is_blocked() || c.flags.is_io_wait() {
+        if self.flags.is_blocked() || self.flags.is_io_wait() {
             return;
         }
-        if c.bulk_len == -1 {
-            if c.query_buf.contains("\n") {
+        if self.bulk_len == -1 {
+            if self.query_buf.contains("\n") {
                 // Read the first line of the query
-                let query_buf_c = c.query_buf.clone();
+                let query_buf_c = self.query_buf.clone();
                 let mut iter = query_buf_c.lines();
                 let query = iter.next().expect("first query doesn't exist");
                 let remaining: Vec<&str> = iter.collect();
-                c.query_buf = remaining.join("\r\n");
-                if c.query_buf.ends_with("\n") {
-                    c.query_buf.push_str("\r\n");
+                self.query_buf = remaining.join("\r\n");
+                if self.query_buf.ends_with("\n") {
+                    self.query_buf.push_str("\r\n");
                 }
 
                 // Now we can split the query in arguments
@@ -207,23 +247,24 @@ impl WrappedClient {
                     .filter(|a| !a.is_empty())
                     .map(|a| Arc::new(RedisObject::String { ptr: StringStorageType::String(a.to_string()) }))
                     .collect();
-                c.argv = argv;
-                if c.argv.is_empty() {
+                self.argv = argv;
+                if !self.argv.is_empty() {
+                    log(LogLevel::Verbose, "process_input_buf ing");
                     // Execute the command. If the client is still valid
                     // after processCommand() return and there is something
                     // on the query buffer try to process the next command.
-                    if self.process_command() && !c.query_buf.is_empty() {
+                    if self.process_command() && !self.query_buf.is_empty() {
                         self.process_input_buf();
                     }
                 } else {
                     // Nothing to process, argc == 0. Just process the query
                     // buffer if it's not empty or return to the caller
-                    if !c.query_buf.is_empty() {
+                    if !self.query_buf.is_empty() {
                         self.process_input_buf();
                     }
                 }
                 return;
-            } else if c.query_buf.len() >= MAX_SIZE_INLINE_CMD {
+            } else if self.query_buf.len() >= MAX_SIZE_INLINE_CMD {
                 log(LogLevel::Verbose, "Client protocol error");
                 // TODO: free client?
                 return;
@@ -233,27 +274,27 @@ impl WrappedClient {
             // the client already sent a command terminated with a newline,
             // we are reading the bulk data that is actually the last
             // argument of the command.
-            if c.bulk_len as usize <= c.query_buf.len() {
-                let query_buf_c = c.query_buf.clone();
+            if self.bulk_len as usize <= self.query_buf.len() {
+                let query_buf_c = self.query_buf.clone();
                 let mut iter = query_buf_c.lines();
                 let arg = iter.next().expect("last arg doesn't exist");
-                if arg.len() != c.bulk_len as usize {
-                    log(LogLevel::Warning, &format!("arg '{}' isn't consistent with bulk len '{}'", arg, c.bulk_len));
+                if arg.len() != self.bulk_len as usize {
+                    log(LogLevel::Warning, &format!("arg '{}' isn't consistent with bulk len '{}'", arg, self.bulk_len));
                     // TODO: free client?
                     return;
                 }
                 let remaining: Vec<&str> = iter.collect();
-                c.query_buf = remaining.join("\r\n");
-                if c.query_buf.ends_with("\n") {
-                    c.query_buf.push_str("\r\n");
+                self.query_buf = remaining.join("\r\n");
+                if self.query_buf.ends_with("\n") {
+                    self.query_buf.push_str("\r\n");
                 }
 
-                c.argv.push(Arc::new(RedisObject::String { ptr: StringStorageType::String(arg.to_string()) }));
+                self.argv.push(Arc::new(RedisObject::String { ptr: StringStorageType::String(arg.to_string()) }));
 
                 // Process the command. If the client is still valid after
                 // the processing and there is more data in the buffer
                 // try to parse it.
-                if self.process_command() && !c.query_buf.is_empty() {
+                if self.process_command() && !self.query_buf.is_empty() {
                     self.process_input_buf();
                 }
             }
@@ -268,7 +309,8 @@ impl WrappedClient {
     /// If 1 is returned the client is still alive and valid and
     /// and other operations can be performed by the caller. Otherwise
     /// if 0 is returned the client was destroied (i.e. after QUIT).
-    fn process_command(&self) -> bool {
+    fn process_command(&mut self) -> bool {
+        log(LogLevel::Verbose, "process_command");
         // Free some memory if needed (maxmemory setting)
         {
             let mut server = server_write();
@@ -277,85 +319,87 @@ impl WrappedClient {
             }
         }
         
-        let mut c = self.0.write().unwrap();
         // Handle the multi bulk command type. This is an alternative protocol
         // supported by Redis in order to receive commands that are composed of
         // multiple binary-safe "bulk" arguments. The latency of processing is
         // a bit higher but this allows things like multi-sets, so if this
         // protocol is used only for MSET and similar commands this is a big win.
-        if c.multi_bulk == 0 && 
-            c.argv.len() == 1 && 
-            c.argv[0].deref().string().is_some() &&
-            c.argv[0].deref().string().unwrap().string().is_some() &&
-            c.argv[0].deref().string().unwrap().string().unwrap().starts_with("*") {
+        if self.multi_bulk == 0 && 
+            self.argv.len() == 1 && 
+            self.argv[0].deref().string().is_some() &&
+            self.argv[0].deref().string().unwrap().string().is_some() &&
+            self.argv[0].deref().string().unwrap().string().unwrap().starts_with("*") {
             
-            let mbulk = c.argv[0].deref().string().unwrap().string().unwrap();
+            let mbulk = self.argv[0].deref().string().unwrap().string().unwrap();
             match mbulk[1..].parse() {
-                Ok(n) => { c.multi_bulk = n; },
+                Ok(n) => { self.multi_bulk = n; },
                 Err(e) => {
                     log(LogLevel::Warning, &format!("Parsing multi bulk '{}' failed: {}", mbulk, e));
                 },
             }
 
-            if c.multi_bulk <= 0 {
-                c.reset();
+            if self.multi_bulk <= 0 {
+                self.reset();
                 return true;
             } else {
-                c.argv.pop();
+                self.argv.pop();
                 return true;
             }
-        } else if c.multi_bulk != 0 {
-            if c.bulk_len == -1 {
-                let bulk = c.argv[0].deref().string().unwrap().string().unwrap();
+        } else if self.multi_bulk != 0 {
+            if self.bulk_len == -1 {
+                let bulk = self.argv[0].deref().string().unwrap().string().unwrap();
                 if bulk.starts_with("$") {
                     match bulk[1..].parse() {
-                        Ok(n) => { c.bulk_len = n; },
+                        Ok(n) => { self.bulk_len = n; },
                         Err(e) => {
                             log(LogLevel::Warning, &format!("Parsing bulk '{}' failed: {}", bulk, e));
                         },
                     }
-                    c.argv.clear();
-                    if c.bulk_len < 0 || c.bulk_len > 1024*1024*1024 {
+                    self.argv.clear();
+                    if self.bulk_len < 0 || self.bulk_len > 1024*1024*1024 {
                         self.add_reply_str("-ERR invalid bulk write count\r\n");
-                        c.reset();
+                        self.reset();
                         return true;
                     }
-                    c.bulk_len += 2;    // add two bytes for CR+LF
+                    self.bulk_len += 2;    // add two bytes for CR+LF
                     return true;
                 } else {
                     self.add_reply_str("-ERR multi bulk protocol error\r\n");
-                    c.reset();
+                    self.reset();
                     return true;
                 }
             } else {
-                let bulk_arg = c.argv.pop().unwrap();
-                c.mbargv.push(bulk_arg);
-                c.multi_bulk -= 1;
-                if c.multi_bulk == 0 {
+                let bulk_arg = self.argv.pop().unwrap();
+                self.mbargv.push(bulk_arg);
+                self.multi_bulk -= 1;
+                if self.multi_bulk == 0 {
                     // Here we need to swap the multi-bulk argc/argv with the
                     // normal argc/argv of the client structure.
-                    (c.argv, c.mbargv) = (c.mbargv.clone(), c.argv.clone());
+                    (self.argv, self.mbargv) = (self.mbargv.clone(), self.argv.clone());
 
                     // We need to set bulklen to something different than -1
                     // in order for the code below to process the command without
                     // to try to read the last argument of a bulk command as
                     // a special argument.
-                    c.bulk_len = 0;
+                    self.bulk_len = 0;
                     // continue below and process the command
                 } else {
-                    c.bulk_len = -1;
+                    self.bulk_len = -1;
                     return true;
                 }
             }
         }
         // -- end of multi bulk commands processing --
 
-        let name_arg = c.argv[0].clone();
+        let name_arg = self.argv[0].clone();
         let name = name_arg.string().unwrap().string().unwrap();
         // The QUIT command is handled as a special case. Normal command
         // procs are unable to close the client connection safely
         if name.eq_ignore_ascii_case("quit") {
+            log(LogLevel::Verbose, "quit executed");
             // TODO: free client?
+            let mut clients = clients_write();
+            clients.remove(self.id);
             return false;
         }
 
@@ -365,54 +409,54 @@ impl WrappedClient {
         match cmd {
             None => {
                 self.add_reply_str(&format!("-ERR unknown command '{}'\r\n", name));
-                c.reset();
+                self.reset();
                 return true;
             },
             Some(cmd) => {
-                if (cmd.arity() > 0 && cmd.arity() != c.argv.len() as i32) ||
-                    (c.argv.len() as i32) < (-cmd.arity()) {    // TODO: < 0???
+                if (cmd.arity() > 0 && cmd.arity() != self.argv.len() as i32) ||
+                    (self.argv.len() as i32) < (-cmd.arity()) {    // TODO: < 0???
                     self.add_reply_str(&format!("-ERR wrong number of arguments for '{}' command\r\n", cmd.name()));
-                    c.reset();
+                    self.reset();
                     return true;
                 } else if server_read().max_memory > 0 && 
                     cmd.flags().is_deny_oom() &&
                     used_memory() > server_read().max_memory {
                     self.add_reply_str("-ERR command not allowed when used memory > 'maxmemory'\r\n");
-                    c.reset();
+                    self.reset();
                     return true;
-                } else if cmd.flags().is_bulk() && c.bulk_len == -1 {
+                } else if cmd.flags().is_bulk() && self.bulk_len == -1 {
                     // This is a bulk command, we have to read the last argument yet.
-                    let last_arg = c.argv.pop().unwrap();
+                    let last_arg = self.argv.pop().unwrap();
                     let bulk = last_arg.string().unwrap().string().unwrap();
                     match bulk.parse() {
-                        Ok(n) => { c.bulk_len = n; },
+                        Ok(n) => { self.bulk_len = n; },
                         Err(e) => {
                             log(LogLevel::Warning, &format!("Parsing bulk '{}' failed: {}", bulk, e));
                         },
                     }
 
-                    if c.bulk_len < 0 || c.bulk_len > 1024*1024*1024 {
+                    if self.bulk_len < 0 || self.bulk_len > 1024*1024*1024 {
                         self.add_reply_str("-ERR invalid bulk write count\r\n");
-                        c.reset();
+                        self.reset();
                         return true;
                     }
-                    c.bulk_len += 2;    // add two bytes for CR+LF
+                    self.bulk_len += 2;    // add two bytes for CR+LF
                     // It is possible that the bulk read is already in the
                     // buffer. Check this condition and handle it accordingly.
                     // This is just a fast path, alternative to call processInputBuffer().
                     // It's a good idea since the code is small and this condition
                     // happens most of the times.
-                    if c.query_buf.len() as i32 >= c.bulk_len {
-                        let query_buf_c = c.query_buf.clone();
+                    if self.query_buf.len() as i32 >= self.bulk_len {
+                        let query_buf_c = self.query_buf.clone();
                         let mut iter = query_buf_c.lines();
                         let arg = iter.next().expect("bulk arg doesn't exist");
                         let remaining: Vec<&str> = iter.collect();
-                        c.query_buf = remaining.join("\r\n");
-                        if c.query_buf.ends_with("\n") {
-                            c.query_buf.push_str("\r\n");
+                        self.query_buf = remaining.join("\r\n");
+                        if self.query_buf.ends_with("\n") {
+                            self.query_buf.push_str("\r\n");
                         }
 
-                        c.argv.push(Arc::new(RedisObject::String { ptr: StringStorageType::String(arg.to_string()) }));
+                        self.argv.push(Arc::new(RedisObject::String { ptr: StringStorageType::String(arg.to_string()) }));
                     } else {
                         // Otherwise return... there is to read the last argument
                         // from the socket.
@@ -432,37 +476,36 @@ impl WrappedClient {
                 let exec = lookup_command("exec").unwrap();
                 let discard = lookup_command("discard").unwrap();
                 // Exec the command
-                if c.flags.is_multi() && !Arc::ptr_eq(&cmd.proc(), &exec.proc()) &&
+                if self.flags.is_multi() && !Arc::ptr_eq(&cmd.proc(), &exec.proc()) &&
                     !Arc::ptr_eq(&cmd.proc(), &discard.proc()) {
                         // TODO
                 } else {
                     // TODO: vm
-                    call(&mut c, cmd);
+                    call(self, cmd);
                 }
 
                 // Prepare the client for the next command
-                c.reset();
+                self.reset();
                 return true;
             },
         };
     }
 
-    fn add_reply(&self, obj: RedisObject) {
-        let mut c = self.0.write().unwrap();
-        if c.reply.is_empty() &&
-            (c.repl_state == ReplState::None ||
-             c.repl_state == ReplState::Online) &&
-            el_write().create_file_event(c.fd, Mask::Writable, 
-                Arc::new(send_reply_to_client), Some(self.0.clone())).is_err() {
+    fn add_reply(&mut self, obj: RedisObject) {
+        if self.reply.is_empty() &&
+            (self.repl_state == ReplState::None ||
+             self.repl_state == ReplState::Online) &&
+            el_write().create_file_event(self.fd, Mask::Writable, 
+                Arc::new(send_reply_to_client), Some(self.id as i32)).is_err() {
             return;
         }
 
         // TODO: vm related
 
-        c.reply.push_back(Arc::new(obj.get_decoded()));
+        self.reply.push_back(Arc::new(obj.get_decoded()));
     }
 
-    fn add_reply_str(&self, s: &str) {
+    fn add_reply_str(&mut self, s: &str) {
         self.add_reply(RedisObject::String { ptr: StringStorageType::String(s.to_string()) });
     }
 }
