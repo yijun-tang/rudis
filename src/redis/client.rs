@@ -245,11 +245,9 @@ impl RedisClient {
                 let mut iter = query_buf_c.lines();
                 let query = iter.next().expect("first query doesn't exist");
                 let remaining: Vec<&str> = iter.collect();
-                if self.query_buf.ends_with("\n") {
-                    self.query_buf = remaining.join("\r\n");
+                self.query_buf = remaining.join("\r\n");
+                if query_buf_c.ends_with("\n") && !self.query_buf.is_empty() {
                     self.query_buf.push_str("\r\n");
-                } else {
-                    self.query_buf = remaining.join("\r\n");
                 }
 
                 // Now we can split the query in arguments
@@ -294,11 +292,9 @@ impl RedisClient {
                     return;
                 }
                 let remaining: Vec<&str> = iter.collect();
-                if self.query_buf.ends_with("\n") {
-                    self.query_buf = remaining.join("\r\n");
+                self.query_buf = remaining.join("\r\n");
+                if query_buf_c.ends_with("\n") && !self.query_buf.is_empty() {
                     self.query_buf.push_str("\r\n");
-                } else {
-                    self.query_buf = remaining.join("\r\n");
                 }
 
                 self.argv.push(Arc::new(RedisObject::String { ptr: StringStorageType::String(arg.to_string()) }));
@@ -462,11 +458,9 @@ impl RedisClient {
                         let mut iter = query_buf_c.lines();
                         let arg = iter.next().expect("bulk arg doesn't exist");
                         let remaining: Vec<&str> = iter.collect();
-                        if self.query_buf.ends_with("\n") {
-                            self.query_buf = remaining.join("\r\n");
+                        self.query_buf = remaining.join("\r\n");
+                        if query_buf_c.ends_with("\n") && !self.query_buf.is_empty() {
                             self.query_buf.push_str("\r\n");
-                        } else {
-                            self.query_buf = remaining.join("\r\n");
                         }
 
                         self.argv.push(Arc::new(RedisObject::String { ptr: StringStorageType::String(arg.to_string()) }));

@@ -211,7 +211,8 @@ pub fn read_query_from_client(fd: i32, _mask: Mask) {
         }
     }
     if nread != 0 {
-        match String::from_utf8(buf.to_vec()) {
+        let bytes = buf.to_vec().iter().take(nread as usize).map(|e| *e).collect();
+        match String::from_utf8(bytes) {
             Ok(s) => {
                 client.query_buf.push_str(&s);
             },
