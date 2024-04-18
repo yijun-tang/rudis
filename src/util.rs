@@ -1,6 +1,11 @@
 use std::{fmt::Display, fs::OpenOptions, io::{self, BufWriter, Write}, process::{abort, exit, id}, sync::RwLock, thread::sleep, time::{Duration, SystemTime, UNIX_EPOCH}};
+use chrono::Utc;
 use once_cell::sync::Lazy;
 use crate::redis::server_read;
+
+/// 
+/// Utility.
+/// 
 
 pub fn timestamp() -> Duration {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap()
@@ -111,7 +116,7 @@ pub fn log(level: LogLevel, body: &str) {
         return;
     }
 
-    let log = format!("[{}] {} {}: {}\n", id(), timestamp().as_millis(), level, body);
+    let log = format!("[{}] {} {}: {}\n", id(), Utc::now().format("%e %b %Y %H:%M:%S%.3f"), level, body);
     let mut writer = LOG_WRITER.write().unwrap();
     match writer.write_all(log.as_bytes()) {
         Ok(_) => {},
