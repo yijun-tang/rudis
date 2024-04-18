@@ -3,7 +3,7 @@
 //! it in form of a library for easy reuse.
 
 use std::{any::Any, ops::{BitAnd, Deref}, sync::{Arc, RwLock}};
-use crate::util::{add_ms_to_now, get_time_ms, log, LogLevel};
+use crate::util::{add_ms_to_now, get_time_ms};
 use self::el::{api_data_read, api_data_write, before_sleep_r, events_read, events_write, fired_read, max_fd_r, max_fd_w, stop_read, stop_write, tevent_head_r, tevent_head_w, tevent_nid_r, tevent_nid_w, EventFinalizerProc, FileProc, Mask, TimeEvent, TimeProc};
 
 pub mod el;
@@ -288,48 +288,6 @@ pub fn delete_time_event(id: u128) -> Result<(), String> {
     }
 
     Err(format!("NO event with the specified ID ({id}) found"))
-}
-
-/// Wait for millseconds until the given file descriptor becomes
-/// writable/readable/exception
-#[cfg(target_os = "macos")]
-pub fn wait(fd: i32, mask: Mask, milliseconds: u128) -> Result<Mask, i32> {
-    use std::mem::zeroed;
-    use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
-
-    let mut timeout = timeval { tv_sec: (milliseconds / 1000) as i64, tv_usec: ((milliseconds % 1000) * 1000) as i32 };
-    let mut ret_mask = Mask::None;
-    let mut ret_val = 0;
-    let mut rfds: fd_set;
-    let mut wfds: fd_set;
-    let mut efds: fd_set;
-
-    unsafe {
-        rfds = zeroed();
-        wfds = zeroed();
-        efds = zeroed();
-        FD_ZERO(&mut rfds);
-        FD_ZERO(&mut wfds);
-        FD_ZERO(&mut efds);
-        if mask.is_readable() {
-            FD_SET(fd, &mut rfds);
-        }
-        if mask.is_writable() {
-            FD_SET(fd, &mut wfds);
-        }
-        ret_val = select(fd + 1, &mut rfds, &mut wfds, &mut efds, &mut timeout);
-        if ret_val > 0 {
-            if FD_ISSET(fd, &mut rfds) {
-                ret_mask = ret_mask | Mask::Readable;
-            }
-            if FD_ISSET(fd, &mut wfds) {
-                ret_mask = ret_mask | Mask::Writable;
-            }
-            Ok(ret_mask)
-        } else {
-            Err(ret_val)
-        }
-    }
 }
 
 
