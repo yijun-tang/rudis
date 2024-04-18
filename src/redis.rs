@@ -2,19 +2,24 @@ use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, io::Wri
 use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, off_t, open, pid_t, setsid, signal, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use once_cell::sync::Lazy;
 use crate::{ae::{create_file_event, create_time_event, el::Mask, handler::{accept_handler, server_cron}}, anet::tcp_server, util::{log, oom, timestamp, LogLevel}};
-use self::{client::RedisClient, signal::setup_sig_segv_action};
+use self::{client::RedisClient, db::RedisDB, signal::setup_sig_segv_action};
 
 pub mod config;
+pub mod client;
+pub mod cmd;
+pub mod obj;
+pub mod db;
 pub mod signal;
 pub mod vm;
 pub mod aof;
 pub mod rdb;
-pub mod client;
-pub mod cmd;
-pub mod obj;
 
-pub static REDIS_VERSION: &str = "1.3.7";
-pub static SERVER: Lazy<Arc<RwLock<RedisServer>>> = Lazy::new(|| { Arc::new(RwLock::new(RedisServer::new())) });
+
+/// 
+/// Redis Server.
+///  
+
+
 pub const IO_BUF_LEN: usize = 1024;
 static MAX_IDLE_TIME: i32 = 60 * 5;             // default client timeout
 static DEFAULT_DBNUM: i32 = 16;
@@ -24,57 +29,15 @@ static SERVER_PORT: u16 = 6379;
 static HASH_MAX_ZIPMAP_ENTRIES: usize = 64;
 static HASH_MAX_ZIPMAP_VALUE: usize = 512;
 
+
+/// Redis Server state.
+/// 
+pub static SERVER: Lazy<Arc<RwLock<RedisServer>>> = Lazy::new(|| { Arc::new(RwLock::new(RedisServer::new())) });
 pub fn server_read() -> RwLockReadGuard<'static, RedisServer> {
     SERVER.read().unwrap()
 }
-
 pub fn server_write() -> RwLockWriteGuard<'static, RedisServer> {
     SERVER.write().unwrap()
-}
-
-struct SaveParam {
-    seconds: u128,
-    changes: i32,
-}
-
-enum AppendFsync {
-    No,
-    Always,
-    EverySec,
-}
-
-#[derive(PartialEq)]
-enum ReplState {
-    // Slave replication state - slave side
-    None,       // No active replication
-    Connect,    // Must connect to master
-    Connected,  // Connected to master
-    // Slave replication state - from the point of view of master
-    // Note that in SEND_BULK and ONLINE state the slave receives new updates
-    // in its output queue. In the WAIT_BGSAVE state instead the server is waiting
-    // to start the next background saving in order to send updates to it.
-    WaitBgSaveStart,        // master waits bgsave to start feeding it
-    WaitBgSaveEnd,          // master waits bgsave to start bulk DB transmission
-    SendBulk,               // master is sending the bulk DB
-    Online,                 // bulk DB already transmitted, receive updates
-}
-
-pub struct RedisDB {
-    dict: HashMap<String, String>,              // The keyspace for this DB
-    expires: HashMap<String, String>,           // Timeout of keys with a timeout set
-    blocking_keys: HashMap<String, String>,     // Keys with clients waiting for data (BLPOP)
-    io_keys: Option<HashMap<String, String>>,   // Keys with clients waiting for VM I/O
-    id: i32,
-}
-
-impl RedisDB {
-    pub fn dict(&self) -> &HashMap<String, String> {
-        &self.dict
-    }
-
-    pub fn expires(&self) -> &HashMap<String, String> {
-        &self.expires
-    }
 }
 
 pub struct RedisServer {
@@ -154,9 +117,7 @@ pub struct RedisServer {
     // job is being processed, it's put on io_processing queue.
 
     io_ready_clients: LinkedList<Arc<RwLock<RedisClient>>>,     // Clients ready to be unblocked. All keys loaded
-}   
-
-
+}
 impl RedisServer {
     pub fn new() -> RedisServer {
         let save_params = vec![
@@ -229,68 +190,51 @@ impl RedisServer {
         }
     }
 
-    pub fn log_file(&self) -> &str {
-        &self.log_file
-    }
+    pub fn init_server(&mut self) {
+        unsafe {
+            // ignore handler
+            signal(SIGHUP, SIG_IGN);
+            signal(SIGPIPE, SIG_IGN);
+            setup_sig_segv_action();
+        }
 
-    pub fn verbosity(&self) -> &LogLevel {
-        &self.verbosity
-    }
+        match OpenOptions::new().write(true).open("/dev/null") {
+            Ok(f) => { self.devnull = Some(Arc::new(f)); },
+            Err(e) => {
+                log(LogLevel::Warning, &format!("Can't open /dev/null: {}", e));
+                exit(1);
+            },
+        }
 
-    pub fn vm_enabled(&self) -> bool {
-        self.vm_enabled
-    }
+        match tcp_server(self.port, &self.bind_addr) {
+            Ok(fd) => { self.fd = fd; },
+            Err(e) => {
+                log(LogLevel::Warning, &format!("Opening TCP port: {}", e));
+                exit(1);
+            },
+        }
 
-    pub fn cron_loops(&self) -> i32 {
-        self.cron_loops
-    }
+        for i in 0..self.dbnum {
+            self.dbs.push(Arc::new(RedisDB::new(self.vm_enabled, i)));
+        }
 
-    pub fn set_cron_loops(&mut self, c: i32) {
-        self.cron_loops = c;
-    }
+        create_time_event(1, Arc::new(server_cron), None, None);
+        match create_file_event(self.fd, Mask::Readable, Arc::new(accept_handler)) {
+            Ok(_) => {},
+            Err(e) => { oom(&e); },    // TODO: is it appropriate to call oom?
+        }
 
-    pub fn set_unix_time(&mut self, t: u64) {
-        self.unix_time = t;
-    }
+        /* if self.append_only {
+            match OpenOptions::new().write(true).append(true).create(true).open(self.append_filename) {
+                Ok(f) => { self.append_writer = Some(Box::new(f)); },
+                Err(e) => {
+                    self.log(LogLevel::Warning, &format!("Can't open the append-only file: {}", e));
+                    exit(1);
+                },
+            }
+        } */
 
-    pub fn dbnum(&self) -> i32 {
-        self.dbnum
-    }
-
-    pub fn dbs(&self) -> &Vec<Arc<RedisDB>> {
-        &self.dbs
-    }
-
-    pub fn bg_save_child_pid(&self) -> i32 {
-        self.bg_save_child_pid
-    }
-
-    pub fn io_ready_clients(&self) -> &LinkedList<Arc<RwLock<RedisClient>>> {
-        &self.io_ready_clients
-    }
-
-    pub fn max_clients(&self) -> u32 {
-        self.max_clients
-    }
-
-    pub fn stat_numconnections(&self) -> u128 {
-        self.stat_numconnections
-    }
-
-    pub fn set_stat_numconnections(&mut self, s: u128) {
-        self.stat_numconnections = s;
-    }
-
-    pub fn slaves(&self) -> &LinkedList<Arc<RwLock<RedisClient>>> {
-        &self.slaves
-    }
-
-    pub fn sharing_pool(&self) -> &HashMap<String, String> {
-        &self.sharing_pool
-    }
-
-    pub fn reset_server_save_params(&mut self) {
-        self.save_params.clear();
+        // if self.vm_enabled { self.init_vm(); }
     }
 
     pub fn daemonize(&self) {
@@ -320,57 +264,6 @@ impl RedisServer {
         }
     }
 
-    pub fn init_server(&mut self) {
-        unsafe {
-            // ignore handler
-            signal(SIGHUP, SIG_IGN);
-            signal(SIGPIPE, SIG_IGN);
-            setup_sig_segv_action();
-        }
-
-        match OpenOptions::new().write(true).open("/dev/null") {
-            Ok(f) => { self.devnull = Some(Arc::new(f)); },
-            Err(e) => {
-                log(LogLevel::Warning, &format!("Can't open /dev/null: {}", e));
-                exit(1);
-            },
-        }
-
-        match tcp_server(self.port, &self.bind_addr) {
-            Ok(fd) => { self.fd = fd; },
-            Err(e) => {
-                log(LogLevel::Warning, &format!("Opening TCP port: {}", e));
-                exit(1);
-            },
-        }
-
-        for i in 0..self.dbnum {
-            let mut io_keys: Option<HashMap<String, String>> = None;
-            if self.vm_enabled {
-                io_keys = Some(HashMap::new());
-            }
-            self.dbs.push(Arc::new(RedisDB { dict: HashMap::new(), expires: HashMap::new(), blocking_keys: HashMap::new(), io_keys, id: i }));
-        }
-
-        create_time_event(1, Arc::new(server_cron), None, None);
-        match create_file_event(self.fd, Mask::Readable, Arc::new(accept_handler)) {
-            Ok(_) => {},
-            Err(e) => { oom(&e); },    // TODO: is it appropriate to call oom?
-        }
-
-        /* if self.append_only {
-            match OpenOptions::new().write(true).append(true).create(true).open(self.append_filename) {
-                Ok(f) => { self.append_writer = Some(Box::new(f)); },
-                Err(e) => {
-                    self.log(LogLevel::Warning, &format!("Can't open the append-only file: {}", e));
-                    exit(1);
-                },
-            }
-        } */
-
-        // if self.vm_enabled { self.init_vm(); }
-    }
-
     /// This function gets called when 'maxmemory' is set on the config file to limit
     /// the max memory used by the server, and we are out of memory.
     /// This function will try to, in order:
@@ -386,26 +279,71 @@ impl RedisServer {
         log(LogLevel::Warning, "free memory if needed!!!");
     }
 
+    
+    pub fn reset_server_save_params(&mut self) {
+        self.save_params.clear();
+    }
     fn append_server_save_params(&mut self, seconds: u128, changes: i32) {
         self.save_params.push(SaveParam { seconds, changes });
     }
 
+    pub fn log_file(&self) -> &str {
+        &self.log_file
+    }
+    pub fn verbosity(&self) -> &LogLevel {
+        &self.verbosity
+    }
+    pub fn vm_enabled(&self) -> bool {
+        self.vm_enabled
+    }
+    pub fn cron_loops(&self) -> i32 {
+        self.cron_loops
+    }
+    pub fn set_cron_loops(&mut self, c: i32) {
+        self.cron_loops = c;
+    }
+    pub fn set_unix_time(&mut self, t: u64) {
+        self.unix_time = t;
+    }
+    pub fn dbnum(&self) -> i32 {
+        self.dbnum
+    }
+    pub fn dbs(&self) -> &Vec<Arc<RedisDB>> {
+        &self.dbs
+    }
+    pub fn bg_save_child_pid(&self) -> i32 {
+        self.bg_save_child_pid
+    }
+    pub fn io_ready_clients(&self) -> &LinkedList<Arc<RwLock<RedisClient>>> {
+        &self.io_ready_clients
+    }
+    pub fn max_clients(&self) -> u32 {
+        self.max_clients
+    }
+    pub fn stat_numconnections(&self) -> u128 {
+        self.stat_numconnections
+    }
+    pub fn set_stat_numconnections(&mut self, s: u128) {
+        self.stat_numconnections = s;
+    }
+    pub fn slaves(&self) -> &LinkedList<Arc<RwLock<RedisClient>>> {
+        &self.slaves
+    }
+    pub fn sharing_pool(&self) -> &HashMap<String, String> {
+        &self.sharing_pool
+    }
     pub fn is_daemonize(&self) -> bool {
         self.daemonize
     }
-
     pub fn append_only(&self) -> bool {
         self.append_only
     }
-
     pub fn append_filename(&self) -> &str {
         &self.append_filename
     }
-
     pub fn db_filename(&self) -> &str {
         &self.db_filename
     }
-
     pub fn port(&self) -> u16 {
         self.port
     }
@@ -416,7 +354,6 @@ impl RedisServer {
             log(LogLevel::Warning, "WARNING overcommit_memory is set to 0! Background save may fail under low condition memory. To fix this issue add 'vm.overcommit_memory = 1' to /etc/sysctl.conf and then reboot or run the command 'sysctl vm.overcommit_memory=1' for this to take effect.");
         }
     }
-
     #[cfg(target_os = "linux")]
     fn linux_overcommit_memory_value(&self) -> i32 {
         use std::io::{BufRead, BufReader, Read};
@@ -449,7 +386,37 @@ impl RedisServer {
 }
 
 
+#[derive(PartialEq)]
+enum ReplState {
+    // Slave replication state - slave side
+    None,       // No active replication
+    Connect,    // Must connect to master
+    Connected,  // Connected to master
+    // Slave replication state - from the point of view of master
+    // Note that in SEND_BULK and ONLINE state the slave receives new updates
+    // in its output queue. In the WAIT_BGSAVE state instead the server is waiting
+    // to start the next background saving in order to send updates to it.
+    WaitBgSaveStart,        // master waits bgsave to start feeding it
+    WaitBgSaveEnd,          // master waits bgsave to start bulk DB transmission
+    SendBulk,               // master is sending the bulk DB
+    Online,                 // bulk DB already transmitted, receive updates
+}
 
+
+struct SaveParam {
+    seconds: u128,
+    changes: i32,
+}
+
+
+enum AppendFsync {
+    No,
+    Always,
+    EverySec,
+}
+
+
+static REDIS_VERSION: &str = "1.3.7";
 pub fn print_logo() {
     log(LogLevel::Notice, &format!("                _._                                                  "));
     log(LogLevel::Notice, &format!("           _.-``__ ''-._                                             "));
