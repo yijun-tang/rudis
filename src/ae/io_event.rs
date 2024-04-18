@@ -149,11 +149,10 @@ pub mod io_event {
 }
 
 #[cfg(target_os = "macos")]
-mod io_event {
+pub mod io_event {
     use std::ptr::{null, null_mut};
     use libc::{close, kevent, kqueue, strerror, timespec, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_DELETE};
-    use crate::util::error;
-    use super::{FiredEvent, Mask, SET_SIZE};
+    use crate::{ae::{el::{fired_write, Mask}, SET_SIZE}, util::error};
 
     #[derive(Clone, Copy)]
     pub struct Kevent {
@@ -170,6 +169,19 @@ mod io_event {
     }
 
     impl ApiState {
+        pub fn create() -> Result<ApiState, String> {
+            let mut _kqfd = -1;
+            let mut _err = String::new();
+            unsafe {
+                _kqfd = kqueue();
+                _err = format!("{}", *strerror(error()));
+            }
+            if _kqfd == -1 {
+                return Err(_err);
+            }
+            Ok(ApiState { kqfd: _kqfd, events: [Kevent { ident: 0, filter: 0, flags: 0, fflags: 0, data: 0 }; SET_SIZE] })
+        }
+
         pub fn add_event(&self, fd: i32, _old: Mask, mask: Mask) -> Result<(), String> {
             let mut ke = kevent {
                 ident: fd as usize,
@@ -216,22 +228,22 @@ mod io_event {
             Ok(())
         }
 
-        pub fn poll(&mut self, fired: &mut Vec<FiredEvent>, time_val_us: Option<u128>) -> i32 {
-            let mut ret_val = 0;
+        pub fn poll(&mut self, time_val_us: Option<u128>) -> i32 {
+            let mut _ret_val = 0;
             if let Some(tv_us) = time_val_us {
                 let timeout = timespec{ tv_sec: (tv_us / 1000_000u128) as i64, tv_nsec: ((tv_us % 1000_000u128) * 1000) as i64 };
                 unsafe {
-                    ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, &timeout);
+                    _ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, &timeout);
                 }
             } else {
                 unsafe {
-                    ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, null());
+                    _ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, null());
                 }
             }
 
             let mut num_events = 0;
-            if ret_val > 0 {
-                num_events = ret_val;
+            if _ret_val > 0 {
+                num_events = _ret_val;
 
                 for j in 0..num_events {
                     let mut mask = Mask::None;
@@ -244,8 +256,8 @@ mod io_event {
                         mask = mask | Mask::Writable;
                     }
 
-                    fired[j as usize].fd = e.ident as i32;
-                    fired[j as usize].mask = mask;
+                    fired_write()[j as usize].fd = e.ident as i32;
+                    fired_write()[j as usize].mask = mask;
                 }
             }
 
@@ -259,28 +271,15 @@ mod io_event {
 
     impl Drop for ApiState {
         fn drop(&mut self) {
-            let mut ret_no = -1;
-            let mut err = String::new();
+            let mut _ret_no = -1;
+            let mut _err = String::new();
             unsafe {
-                ret_no = close(self.kqfd);
-                err = format!("{}", *strerror(error()));
+                _ret_no = close(self.kqfd);
+                _err = format!("{}", *strerror(error()));
             }
-            if ret_no == -1 {
-                eprintln!("ApiState.drop failed: {}", err);
+            if _ret_no == -1 {
+                eprintln!("ApiState.drop failed: {}", _err);
             }
         }
-    }
-
-    pub fn api_create() -> Result<ApiState, String> {
-        let mut kqfd = -1;
-        let mut err = String::new();
-        unsafe {
-            kqfd = kqueue();
-            err = format!("{}", *strerror(error()));
-        }
-        if kqfd == -1 {
-            return Err(err);
-        }
-        Ok(ApiState { kqfd, events: [Kevent { ident: 0, filter: 0, flags: 0, fflags: 0, data: 0 }; SET_SIZE] })
     }
 }
