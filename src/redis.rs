@@ -43,7 +43,7 @@ pub fn server_write() -> RwLockWriteGuard<'static, RedisServer> {
 pub struct RedisServer {
     port: u16,
     fd: i32,
-    dbs: Vec<Arc<RedisDB>>,
+    dbs: Vec<Arc<RwLock<RedisDB>>>,
     sharing_pool: HashMap<String, String>,      // Pool used for object sharing
     sharing_pool_size: u32,
     dirty: u128,                                // changes to DB from the last save
@@ -215,7 +215,7 @@ impl RedisServer {
         }
 
         for i in 0..self.dbnum {
-            self.dbs.push(Arc::new(RedisDB::new(self.vm_enabled, i)));
+            self.dbs.push(Arc::new(RwLock::new(RedisDB::new(self.vm_enabled, i))));
         }
 
         create_time_event(1, Arc::new(server_cron), None, None);
@@ -308,7 +308,7 @@ impl RedisServer {
     pub fn dbnum(&self) -> i32 {
         self.dbnum
     }
-    pub fn dbs(&self) -> &Vec<Arc<RedisDB>> {
+    pub fn dbs(&self) -> &Vec<Arc<RwLock<RedisDB>>> {
         &self.dbs
     }
     pub fn bg_save_child_pid(&self) -> i32 {

@@ -1,7 +1,7 @@
-use std::{collections::HashMap, ops::BitOr, sync::Arc};
+use std::{borrow::BorrowMut, collections::HashMap, ops::{BitOr, Deref}, sync::Arc};
 use once_cell::sync::Lazy;
-use crate::{redis::obj::PONG, util::{log, LogLevel}};
-use super::{client::RedisClient, obj::RedisObject, server_write};
+use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
+use super::{client::RedisClient, obj::{RedisObject, C_ONE, OK}, server_write};
 
 
 /// 
@@ -121,18 +121,53 @@ fn ping_command(c: &mut RedisClient) {
 }
 
 fn get_command(c: &mut RedisClient) {
-    get_generic_command(c);
+    match get_generic_command(c) {
+        Ok(_) => {},
+        Err(e) => {
+            log(LogLevel::Warning, &e);
+        },
+    }
 }
-fn get_generic_command(c: &mut RedisClient) -> i32 {
-
-    todo!()
+fn get_generic_command(c: &mut RedisClient) -> Result<(), String> {
+    let key = c.argv[1].string().unwrap().string().unwrap().to_string();
+    match c.lookup_key_read_or_reply(&key, NULL_BULK.clone()) {
+        None => Ok(()),
+        Some(v) => {
+            match v.deref() {
+                RedisObject::String { ptr: _ } => {
+                    c.add_reply_bulk(v);
+                    Ok(())
+                },
+                _ => {
+                    c.add_reply(WRONG_TYPE_ERR.clone());
+                    Err("WRONG TYPE ERROR".to_string())
+                },
+            }
+        },
+    }
 }
 
 fn set_command(c: &mut RedisClient) {
-    set_generic_command(c, 0);
+    set_generic_command(c, false);
 }
-fn set_generic_command(c: &mut RedisClient, nx: i32) {
-    todo!()
+fn set_generic_command(c: &mut RedisClient, nx: bool) {
+    if nx {
+        // TODO: delete if volatile
+    }
+
+    let key = c.argv[1].string().unwrap().string().unwrap();
+    let db = c.db.clone().expect("db doesn't exist");
+    let mut db_w = db.write().unwrap();
+    db_w.dict.insert(key.to_string(), c.argv[2].clone());
+    // TODO: if failed to insert
+
+    server_write().dirty += 1;
+    db_w.remove_expire(key);
+    if nx {
+        c.add_reply(C_ONE.clone());
+    } else {
+        c.add_reply(OK.clone());
+    }
 }
 
 pub fn exec_command(c: &mut RedisClient) {

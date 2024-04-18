@@ -2,7 +2,7 @@ use std::{collections::{HashSet, LinkedList}, ops::Deref, sync::{Arc, RwLock, Rw
 use libc::close;
 use once_cell::sync::Lazy;
 use crate::{ae::{create_file_event, delete_file_event, el::Mask, handler::{read_query_from_client, send_reply_to_client}}, anet::{nonblock, tcp_no_delay}, redis::{cmd::lookup_command, server_read, server_write}, util::{log, timestamp, LogLevel}, zmalloc::used_memory};
-use super::{cmd::{call, MultiCmd, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType}, RedisDB, ReplState};
+use super::{cmd::{call, MultiCmd, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType, CRLF}, RedisDB, ReplState};
 
 
 /// 
@@ -36,9 +36,9 @@ pub fn deleted_clients_write() -> RwLockWriteGuard<'static, HashSet<i32>> {
 /// Clients are taken in a liked list.
 pub struct RedisClient {
     fd: i32,
-    db: Option<Arc<RedisDB>>,
+    pub db: Option<Arc<RwLock<RedisDB>>>,
     pub query_buf: String,
-    argv: Vec<Arc<RedisObject>>,
+    pub argv: Vec<Arc<RedisObject>>,
     mbargv: Vec<Arc<RedisObject>>,
     bulk_len: i32,                  // bulk read len. -1 if not in bulk read mode
     multi_bulk: i32,                // multi bulk command format active
@@ -211,11 +211,8 @@ impl RedisClient {
     fn process_command(&mut self) -> bool {
         // log(LogLevel::Verbose, "process_command");
         // Free some memory if needed (maxmemory setting)
-        {
-            let mut server = server_write();
-            if server.max_memory > 0 {
-                server.free_memory_if_needed();
-            }
+        if server_read().max_memory > 0 {
+            server_write().free_memory_if_needed();
         }
         
         // Handle the multi bulk command type. This is an alternative protocol
@@ -401,8 +398,45 @@ impl RedisClient {
         self.reply.push_back(Arc::new(obj.get_decoded()));
     }
 
+    pub fn add_reply_bulk(&mut self, obj: Arc<RedisObject>) {
+        self.add_reply_bulk_len(obj.clone());
+        self.add_reply(obj);
+        self.add_reply(CRLF.clone());
+    }
+
+    fn add_reply_bulk_len(&mut self, obj: Arc<RedisObject>) {
+        let mut len = 0usize;
+        match obj.deref() {
+            RedisObject::String { ptr } => {
+                match ptr {
+                    StringStorageType::String(s) => { len = s.len(); },
+                    StringStorageType::Integer(n) => {
+                        // Compute how many bytes will take this integer as a radix 10 string
+                        len = n.to_string().len();
+                    },
+                }
+            }
+            _ => {
+                todo!()
+            },
+        }
+        self.add_reply_str(&format!("${len}\r\n"));
+    }
+
     fn add_reply_str(&mut self, s: &str) {
         self.add_reply(Arc::new(RedisObject::String { ptr: StringStorageType::String(s.to_string()) }));
+    }
+
+    pub fn lookup_key_read_or_reply(&mut self, key: &str, obj: Arc<RedisObject>) -> Option<Arc<RedisObject>> {
+        let db = self.db.clone().expect("db doesn't exist");
+        let db_r = db.read().unwrap();
+        match db_r.dict.get(key) {
+            None => {
+                self.add_reply(obj);
+                None
+            },
+            Some(v) => { Some(v.clone()) },
+        }
     }
 
     fn select_db(&mut self, id: i32) {

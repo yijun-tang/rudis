@@ -1,8 +1,10 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
+
+use super::obj::RedisObject;
 
 
 pub struct RedisDB {
-    dict: HashMap<String, String>,              // The keyspace for this DB
+    pub dict: HashMap<String, Arc<RedisObject>>,              // The keyspace for this DB
     expires: HashMap<String, String>,           // Timeout of keys with a timeout set
     blocking_keys: HashMap<String, String>,     // Keys with clients waiting for data (BLPOP)
     io_keys: Option<HashMap<String, String>>,   // Keys with clients waiting for VM I/O
@@ -18,8 +20,8 @@ impl RedisDB {
         RedisDB { dict: HashMap::new(), expires: HashMap::new(), blocking_keys: HashMap::new(), io_keys, id }
     }
 
-    pub fn dict(&self) -> &HashMap<String, String> {
-        &self.dict
+    pub fn remove_expire(&mut self, key: &str) {
+        self.expires.remove(key);
     }
 
     pub fn expires(&self) -> &HashMap<String, String> {

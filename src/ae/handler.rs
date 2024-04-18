@@ -50,9 +50,9 @@ pub fn server_cron(id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) ->
     {
         let server = server_read();
         for i in 0..server.dbnum() {
-            let size = server.dbs()[i as usize].dict().capacity();
-            let used = server.dbs()[i as usize].dict().len();
-            let vkeys = server.dbs()[i as usize].expires().len();
+            let size = server.dbs()[i as usize].read().unwrap().dict.capacity();
+            let used = server.dbs()[i as usize].read().unwrap().dict.len();
+            let vkeys = server.dbs()[i as usize].read().unwrap().expires().len();
             if (loops % 5 == 0) && (used != 0 || vkeys != 0) {
                 log(LogLevel::Verbose, &format!("DB {}: {} keys ({} volatile) in {} slots HT.", i, used, vkeys, size));
             }
