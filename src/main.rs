@@ -1,5 +1,5 @@
-use std::{env, process::exit, sync::Arc, time::Instant};
-use rredis::{ae::{ae_main, el::set_before_sleep_proc, handler::before_sleep}, redis::{server_read, server_write, REDIS_VERSION}, util::{log, LogLevel}};
+use std::{env, process::exit, sync::Arc};
+use rredis::{ae::{ae_main, el::set_before_sleep_proc, handler::before_sleep}, redis::{print_logo, server_read, server_write}, util::{log, LogLevel}};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -18,7 +18,7 @@ fn main() {
     }
 
     server_write().init_server();
-    log(LogLevel::Notice, &format!("Server started, Redis version {}", REDIS_VERSION));
+    print_logo();
 
     #[cfg(target_os = "linux")]
     server_read().linux_overcommit_memory_warning();
