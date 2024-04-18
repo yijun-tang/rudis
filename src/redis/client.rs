@@ -257,7 +257,6 @@ impl RedisClient {
                         self.reset();
                         return true;
                     }
-                    self.bulk_len += 2;    // add two bytes for CR+LF
                     return true;
                 } else {
                     self.add_reply_str("-ERR multi bulk protocol error\r\n");
@@ -333,7 +332,6 @@ impl RedisClient {
                         self.reset();
                         return true;
                     }
-                    self.bulk_len += 2;    // add two bytes for CR+LF
                     // It is possible that the bulk read is already in the
                     // buffer. Check this condition and handle it accordingly.
                     // This is just a fast path, alternative to call processInputBuffer().
