@@ -1,5 +1,5 @@
 use std::{env, process::exit, sync::Arc, time::Instant};
-use rredis::{ae::{el::{ae_main, set_before_sleep_proc}, handler::before_sleep}, redis::{server_read, server_write, REDIS_VERSION}, util::{log, LogLevel}};
+use rredis::{ae::{ae_main, el::set_before_sleep_proc, handler::before_sleep}, redis::{server_read, server_write, REDIS_VERSION}, util::{log, LogLevel}};
 
 fn main() {
     let args: Vec<String> = env::args().collect();

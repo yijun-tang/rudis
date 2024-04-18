@@ -5,6 +5,12 @@ use super::{delete_file_event, Mask};
 
 static MAX_WRITE_PER_EVENT: usize = 1024 * 64;
 
+
+/// 
+/// Event Handlers of Event Loop.
+/// 
+
+
 /// This function gets called every time Redis is entering the
 /// main loop of the event driven library, that is, before to sleep
 /// for ready file descriptors.
@@ -27,6 +33,9 @@ pub fn before_sleep() {
     }
 }
 
+
+/// Time Event handler: server cron tasks
+///  
 pub fn server_cron(id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) -> i32 {
     let loops = server_read().cron_loops();
     server_write().set_cron_loops(loops + 1);
@@ -73,6 +82,9 @@ pub fn server_cron(id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) ->
     1000
 }
 
+
+/// File Event handler: accept connection request
+/// 
 pub fn accept_handler(fd: i32, mask: Mask) {
     let (c_fd, c_ip, c_port) = match accept(fd) {
         Ok((c_fd, c_ip, c_port)) => { (c_fd, c_ip, c_port) },
@@ -109,8 +121,11 @@ pub fn accept_handler(fd: i32, mask: Mask) {
     }
 }
 
+
+/// File Event handler: send reply to client
+/// 
 pub fn send_reply_to_client(fd: i32, mask: Mask) {
-    log(LogLevel::Verbose, "send_reply_to_client entered");
+    // log(LogLevel::Verbose, "send_reply_to_client entered");
     let clients = clients_read();
     let client_r = clients.iter().filter(|e| e.read().unwrap().fd() == fd).nth(0).expect("client not found");
     let mut client = client_r.write().unwrap();
@@ -184,9 +199,12 @@ pub fn send_reply_to_client(fd: i32, mask: Mask) {
         client.sent_len = 0;
         delete_file_event(client.fd(), Mask::Writable);
     }
-    log(LogLevel::Verbose, "send_reply_to_client left");
+    // log(LogLevel::Verbose, "send_reply_to_client left");
 }
 
+
+/// File Event handler: read query from client
+/// 
 pub fn read_query_from_client(fd: i32, _mask: Mask) {
     let clients = clients_read();
     let client_r = clients.iter().filter(|e| e.read().unwrap().fd() == fd).nth(0).expect("client not found");
@@ -228,3 +246,10 @@ pub fn read_query_from_client(fd: i32, _mask: Mask) {
         client.process_input_buf();
     }
 }
+
+
+/// File Event handler: empty handler is used for initialization
+/// 
+pub fn proc_holder(_fd: i32, _mask: Mask) {
+}
+
