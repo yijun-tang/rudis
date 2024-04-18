@@ -49,7 +49,7 @@ pub mod io_event {
                     ee.events |= EPOLLOUT as u32;
                 }
                 ee.u64 = fd as u64;
-                log(LogLevel::Warning, &format!("add_event op: {}", op));
+                // log(LogLevel::Warning, &format!("add_event op: {}", op));
                 if epoll_ctl(self.epfd, op, fd, &mut ee) == -1 {
                     // log(LogLevel::Warning, &format!("add_event err: {}", *strerror(error())));
                     return Err(format!("ApiState.add_event: {}", *strerror(error())));

@@ -1,91 +1,36 @@
 use std::{collections::{HashSet, LinkedList}, ops::Deref, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
 use libc::close;
 use once_cell::sync::Lazy;
-
 use crate::{ae::{create_file_event, delete_file_event, el::Mask, handler::{read_query_from_client, send_reply_to_client}}, anet::{nonblock, tcp_no_delay}, redis::{cmd::lookup_command, server_read, server_write}, util::{log, timestamp, LogLevel}, zmalloc::used_memory};
-use super::{cmd::{call, RedisCommand, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType}, RedisDB, ReplState};
+use super::{cmd::{call, MultiCmd, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType}, RedisDB, ReplState};
 
-pub struct ClientFlags(u8);
 
-impl ClientFlags {
-    /// This client is a slave server
-    fn slave() -> ClientFlags {
-        ClientFlags(1)
-    }
-    /// This client is a master server
-    fn master() -> ClientFlags {
-        ClientFlags(2)
-    }
-    /// This client is a slave monitor, see MONITOR
-    fn monitor() -> ClientFlags {
-        ClientFlags(4)
-    }
-    /// This client is in a MULTI context
-    fn multi() -> ClientFlags {
-        ClientFlags(8)
-    }
-    /// The client is waiting in a blocking operation
-    fn blocked() -> ClientFlags {
-        ClientFlags(16)
-    }
-    /// The client is waiting for Virtual Memory I/O
-    fn io_wait() -> ClientFlags {
-        ClientFlags(32)
-    }
+/// 
+/// Redis Server-side client state.
+/// 
 
-    pub fn is_slave(&self) -> bool {
-        (self.0 & Self::slave().0) != 0
-    }
 
-    pub fn is_master(&self) -> bool {
-        (self.0 & Self::master().0) != 0
-    }
-
-    pub fn is_blocked(&self) -> bool {
-        (self.0 & Self::blocked().0) != 0
-    }
-
-    fn is_io_wait(&self) -> bool {
-        (self.0 & Self::io_wait().0) != 0
-    }
-
-    fn is_multi(&self) -> bool {
-        (self.0 & Self::multi().0) != 0
-    }
-}
-
-/// Client MULTI/EXEC state
-pub struct MultiCmd {
-    argv: Vec<Arc<RedisObject>>,
-    cmd: RedisCommand,
-}
-
-pub struct MultiState {
-    commands: Vec<MultiCmd>,    // Array of MULTI commands
-}
-
+/// Client state.
 pub static CLIENTS: Lazy<Box<RwLock<LinkedList<Arc<RwLock<RedisClient>>>>>> = Lazy::new(|| {
     Box::new(RwLock::new(LinkedList::new()))
 });
-pub static DELETED_CLIENTS: Lazy<RwLock<HashSet<i32>>> = Lazy::new(|| {
-    RwLock::new(HashSet::new())
-});
-
 pub fn clients_read() -> RwLockReadGuard<'static, LinkedList<Arc<RwLock<RedisClient>>>> {
     CLIENTS.read().unwrap()
 }
-
 pub fn clients_write() -> RwLockWriteGuard<'static, LinkedList<Arc<RwLock<RedisClient>>>> {
     CLIENTS.write().unwrap()
 }
-
+/// Deleted client fd set.
+pub static DELETED_CLIENTS: Lazy<RwLock<HashSet<i32>>> = Lazy::new(|| {
+    RwLock::new(HashSet::new())
+});
 pub fn deleled_clients_read() -> RwLockReadGuard<'static, HashSet<i32>> {
     DELETED_CLIENTS.read().unwrap()
 }
-
 pub fn deleted_clients_write() -> RwLockWriteGuard<'static, HashSet<i32>> {
     DELETED_CLIENTS.write().unwrap()
 }
+
 
 /// With multiplexing we need to take per-clinet state.
 /// Clients are taken in a liked list.
@@ -110,41 +55,7 @@ pub struct RedisClient {
                                             // swap file in order to continue.
 }
 
-impl Drop for RedisClient {
-    fn drop(&mut self) {
-        log(LogLevel::Verbose, "client dropped entered");
-        // Note that if the client we are freeing is blocked into a blocking
-        // call, we have to set querybuf to NULL *before* to call
-        // unblockClientWaitingData() to avoid processInputBuffer() will get
-        // called. Also it is important to remove the file events after
-        // this, because this call adds the READABLE event.
-        // TODO: blocked
-
-        delete_file_event(self.fd, Mask::Readable);
-        delete_file_event(self.fd, Mask::Writable);
-        unsafe { close(self.fd); }
-
-        // Remove from the list of clients waiting for swapped keys
-        // TODO
-
-        // Other cleanup
-        if self.flags.is_slave() {
-            // TODO
-        }
-        if self.flags.is_master() {
-            server_write().master = None;
-            server_write().repl_state = ReplState::Connect;
-        }
-
-        log(LogLevel::Verbose, "client dropped left");
-    }
-}
-
 impl RedisClient {
-    pub fn fd(&self) -> i32 {
-        self.fd
-    }
-
     pub fn create(fd: i32) -> Result<Arc<RwLock<RedisClient>>, String> {
         match nonblock(fd) {
             Ok(_) => {},
@@ -207,26 +118,6 @@ impl RedisClient {
         c
     }
 
-    pub fn set_argv(&mut self, argv: Vec<Arc<RedisObject>>) {
-        self.argv = argv;
-    }
-
-    fn select_db(&mut self, id: i32) {
-        if id < 0 || id >= server_read().dbnum {
-            log(LogLevel::Warning, &format!("Invalid db #{} out of [0, {})", id, server_read().dbnum));
-            return;
-        }
-        self.db = Some(server_read().dbs[id as usize].clone());
-    }
-
-    /// reset prepare the client to process the next command
-    fn reset(&mut self) {
-        self.argv.clear();
-        self.mbargv.clear();
-        self.bulk_len = -1;
-        self.multi_bulk = 0;
-    }
-
     pub fn process_input_buf(&mut self) {
         // Before to process the input buffer, make sure the client is not
         // waitig for a blocking operation such as BLPOP. Note that the first
@@ -237,7 +128,7 @@ impl RedisClient {
         if self.flags.is_blocked() || self.flags.is_io_wait() {
             return;
         }
-        log(LogLevel::Verbose, &format!("process_input_buf entered: {}", self.bulk_len));
+        // log(LogLevel::Verbose, &format!("process_input_buf entered: {}", self.bulk_len));
         if self.bulk_len == -1 {
             if self.query_buf.contains("\n") {
                 // Read the first line of the query
@@ -257,7 +148,7 @@ impl RedisClient {
                     .collect();
                 self.argv = argv;
                 if !self.argv.is_empty() {
-                    log(LogLevel::Verbose, "process_input_buf ing");
+                    // log(LogLevel::Verbose, "process_input_buf ing");
                     // Execute the command. If the client is still valid
                     // after processCommand() return and there is something
                     // on the query buffer try to process the next command.
@@ -318,7 +209,7 @@ impl RedisClient {
     /// and other operations can be performed by the caller. Otherwise
     /// if 0 is returned the client was destroied (i.e. after QUIT).
     fn process_command(&mut self) -> bool {
-        log(LogLevel::Verbose, "process_command");
+        // log(LogLevel::Verbose, "process_command");
         // Free some memory if needed (maxmemory setting)
         {
             let mut server = server_write();
@@ -404,7 +295,6 @@ impl RedisClient {
         // The QUIT command is handled as a special case. Normal command
         // procs are unable to close the client connection safely
         if name.eq_ignore_ascii_case("quit") {
-            log(LogLevel::Verbose, "quit executed");
             deleted_clients_write().insert(self.fd);
             return false;
         }
@@ -412,7 +302,6 @@ impl RedisClient {
         // Now lookup the command and check ASAP about trivial error conditions
         // such wrong arity, bad command name and so forth.
         let cmd = lookup_command(name);
-        log(LogLevel::Verbose, &format!("lookup: {} -> {}", name, cmd.is_none()));
         match cmd {
             None => {
                 self.add_reply_str(&format!("-ERR unknown command '{}'\r\n", name));
@@ -489,7 +378,6 @@ impl RedisClient {
                 } else {
                     // TODO: vm
                     call(self, cmd);
-                    log(LogLevel::Verbose, "process_command ing");
                 }
 
                 // Prepare the client for the next command
@@ -500,7 +388,6 @@ impl RedisClient {
     }
 
     pub fn add_reply(&mut self, obj: Arc<RedisObject>) {
-        log(LogLevel::Verbose, "add_reply entered");
         if self.reply.is_empty() &&
             (self.repl_state == ReplState::None ||
              self.repl_state == ReplState::Online) &&
@@ -508,8 +395,6 @@ impl RedisClient {
                 Arc::new(send_reply_to_client)).is_err() {
             return;
         }
-
-        log(LogLevel::Verbose, "add_reply ing");
 
         // TODO: vm related
 
@@ -519,4 +404,104 @@ impl RedisClient {
     fn add_reply_str(&mut self, s: &str) {
         self.add_reply(Arc::new(RedisObject::String { ptr: StringStorageType::String(s.to_string()) }));
     }
+
+    fn select_db(&mut self, id: i32) {
+        if id < 0 || id >= server_read().dbnum {
+            log(LogLevel::Warning, &format!("Invalid db #{} out of [0, {})", id, server_read().dbnum));
+            return;
+        }
+        self.db = Some(server_read().dbs[id as usize].clone());
+    }
+
+    /// reset prepare the client to process the next command
+    fn reset(&mut self) {
+        self.argv.clear();
+        self.mbargv.clear();
+        self.bulk_len = -1;
+        self.multi_bulk = 0;
+    }
+
+    pub fn fd(&self) -> i32 {
+        self.fd
+    }
+    pub fn set_argv(&mut self, argv: Vec<Arc<RedisObject>>) {
+        self.argv = argv;
+    }
 }
+
+impl Drop for RedisClient {
+    fn drop(&mut self) {
+        // Note that if the client we are freeing is blocked into a blocking
+        // call, we have to set querybuf to NULL *before* to call
+        // unblockClientWaitingData() to avoid processInputBuffer() will get
+        // called. Also it is important to remove the file events after
+        // this, because this call adds the READABLE event.
+        // TODO: blocked
+
+        delete_file_event(self.fd, Mask::Readable);
+        delete_file_event(self.fd, Mask::Writable);
+        unsafe { close(self.fd); }
+
+        // Remove from the list of clients waiting for swapped keys
+        // TODO
+
+        // Other cleanup
+        if self.flags.is_slave() {
+            // TODO
+        }
+        if self.flags.is_master() {
+            server_write().master = None;
+            server_write().repl_state = ReplState::Connect;
+        }
+    }
+}
+
+
+pub struct MultiState {
+    commands: Vec<MultiCmd>,    // Array of MULTI commands
+}
+
+
+pub struct ClientFlags(u8);
+impl ClientFlags {
+    /// This client is a slave server
+    fn slave() -> ClientFlags {
+        ClientFlags(1)
+    }
+    /// This client is a master server
+    fn master() -> ClientFlags {
+        ClientFlags(2)
+    }
+    /// This client is a slave monitor, see MONITOR
+    fn monitor() -> ClientFlags {
+        ClientFlags(4)
+    }
+    /// This client is in a MULTI context
+    fn multi() -> ClientFlags {
+        ClientFlags(8)
+    }
+    /// The client is waiting in a blocking operation
+    fn blocked() -> ClientFlags {
+        ClientFlags(16)
+    }
+    /// The client is waiting for Virtual Memory I/O
+    fn io_wait() -> ClientFlags {
+        ClientFlags(32)
+    }
+    pub fn is_slave(&self) -> bool {
+        (self.0 & Self::slave().0) != 0
+    }
+    pub fn is_master(&self) -> bool {
+        (self.0 & Self::master().0) != 0
+    }
+    pub fn is_blocked(&self) -> bool {
+        (self.0 & Self::blocked().0) != 0
+    }
+    fn is_io_wait(&self) -> bool {
+        (self.0 & Self::io_wait().0) != 0
+    }
+    fn is_multi(&self) -> bool {
+        (self.0 & Self::multi().0) != 0
+    }
+}
+

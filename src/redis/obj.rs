@@ -1,7 +1,14 @@
 use std::sync::Arc;
 use once_cell::sync::Lazy;
 
+
+/// 
+/// Redis Objects.
+///  
+
+
 /// Our shared "common" objects
+/// 
 pub static CRLF: Lazy<Arc<RedisObject>> = Lazy::new(|| {
     Arc::new(RedisObject::String { ptr: StringStorageType::String("\r\n".to_string()) })
 });
@@ -102,7 +109,6 @@ pub enum RedisObject {
     ZSet,
     Hash,
 }
-
 impl RedisObject {
     pub fn string(&self) -> Option<&StringStorageType> {
         match self {
@@ -133,7 +139,6 @@ pub enum StringStorageType {
     String(String),     // raw string
     Integer(isize),     // encoded as integer
 } 
-
 impl StringStorageType {
     pub fn string(&self) -> Option<&str> {
         match self {

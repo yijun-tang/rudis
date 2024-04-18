@@ -188,7 +188,7 @@ pub fn search_nearest_timer() -> Option<Arc<RwLock<TimeEvent>>> {
 
 
 pub fn create_file_event(fd: i32, mask: Mask, proc: FileProc) -> Result<(), String> {
-    log(LogLevel::Verbose, &format!("create_file_event entered {}", fd));
+    // log(LogLevel::Verbose, &format!("create_file_event entered {}", fd));
 
     if fd >= SET_SIZE as i32 {
         return Err(format!("fd should be less than {}", SET_SIZE));
@@ -206,12 +206,12 @@ pub fn create_file_event(fd: i32, mask: Mask, proc: FileProc) -> Result<(), Stri
         *max_fd_w() = fd;
     }
 
-    log(LogLevel::Verbose, "create_file_event left");
+    // log(LogLevel::Verbose, "create_file_event left");
 
     Ok(())
 }
 pub fn delete_file_event(fd: i32, mask: Mask) {
-    log(LogLevel::Verbose, "delete_file_event entered");
+    // log(LogLevel::Verbose, "delete_file_event entered");
     if fd >= SET_SIZE as i32 {
         return;
     }
@@ -240,7 +240,7 @@ pub fn delete_file_event(fd: i32, mask: Mask) {
         }
     }
 
-    log(LogLevel::Verbose, "delete_file_event left");
+    // log(LogLevel::Verbose, "delete_file_event left");
 }
 
 

@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, fs::OpenOptions, io::{BufRead, BufReader, Read}, ops::Deref, process::exit, sync::Arc};
+use std::{fs::OpenOptions, io::{BufRead, BufReader, Read}, process::exit, sync::Arc};
 use crate::{redis::RedisClient, util::{log, LogLevel}, zmalloc::used_memory};
 use super::{cmd::lookup_command, obj::{try_object_encoding, try_object_sharing, RedisObject, StringStorageType}, RedisServer};
 
