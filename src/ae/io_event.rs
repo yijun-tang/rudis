@@ -199,18 +199,8 @@ pub mod io_event {
     use libc::{close, kevent, kqueue, strerror, timespec, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_DELETE};
     use crate::{ae::{el::{fired_write, Mask}, SET_SIZE}, util::error};
 
-    #[derive(Clone, Copy)]
-    pub struct Kevent {
-        ident: i32,
-        filter: i16,
-        flags: u16,
-        fflags: u32,
-        data: isize,
-    }
-
     pub struct ApiState {
         kqfd: i32,
-        events: [Kevent; SET_SIZE],
     }
 
     impl ApiState {
@@ -224,7 +214,7 @@ pub mod io_event {
             if _kqfd == -1 {
                 return Err(_err);
             }
-            Ok(ApiState { kqfd: _kqfd, events: [Kevent { ident: 0, filter: 0, flags: 0, fflags: 0, data: 0 }; SET_SIZE] })
+            Ok(ApiState { kqfd: _kqfd })
         }
 
         pub fn add_event(&self, fd: i32, _old: Mask, mask: Mask) -> Result<(), String> {
@@ -275,14 +265,15 @@ pub mod io_event {
 
         pub fn poll(&mut self, time_val_us: Option<u128>) -> i32 {
             let mut _ret_val = 0;
+            let mut events = [kevent { ident: 0, filter: 0, flags: 0, fflags: 0, data: 0, udata: null_mut() }; SET_SIZE];
             if let Some(tv_us) = time_val_us {
                 let timeout = timespec{ tv_sec: (tv_us / 1000_000u128) as i64, tv_nsec: ((tv_us % 1000_000u128) * 1000) as i64 };
                 unsafe {
-                    _ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, &timeout);
+                    _ret_val = kevent(self.kqfd, null(), 0, &mut events[0] as *mut _ as *mut kevent, SET_SIZE as i32, &timeout);
                 }
             } else {
                 unsafe {
-                    _ret_val = kevent(self.kqfd, null(), 0, &mut self.events[0] as *mut _ as *mut kevent, SET_SIZE as i32, null());
+                    _ret_val = kevent(self.kqfd, null(), 0, &mut events[0] as *mut _ as *mut kevent, SET_SIZE as i32, null());
                 }
             }
 
@@ -292,7 +283,7 @@ pub mod io_event {
 
                 for j in 0..num_events {
                     let mut mask = Mask::None;
-                    let e = &self.events[j as usize];
+                    let e = &events[j as usize];
 
                     if e.filter == EVFILT_READ {
                         mask = mask | Mask::Readable;
