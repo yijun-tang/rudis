@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{borrow::Borrow, sync::Arc};
 use once_cell::sync::Lazy;
 
 
@@ -156,6 +156,54 @@ pub fn try_object_sharing(obj: Arc<RedisObject>) {
     todo!()
 }
 
-pub fn try_object_encoding(obj: Arc<RedisObject>) {
-    todo!()
+/// Try to encode a string object in order to save space
+pub fn try_object_encoding(obj: Arc<RedisObject>) -> Arc<RedisObject> {
+    // It's not save to encode shared objects: shared objects can be shared
+    // everywhere in the "object space" of Redis. Encoded objects can only
+    // appear as "values" (and not, for instance, as keys)
+    if Arc::strong_count(&obj) > 1 {
+        return obj;
+    }
+
+    // Currently we try to encode only strings
+    // TODO: redis assert
+
+    match obj.borrow() {
+        RedisObject::String { ptr } => {
+            match ptr {
+                StringStorageType::String(s) => {
+                    match is_string_representable_as_int(s) {
+                        Ok(encoded) => { 
+                            return Arc::new(RedisObject::String { ptr: StringStorageType::Integer(encoded) });
+                        },
+                        Err(_) => {},
+                    }
+                },
+                StringStorageType::Integer(_) => {},
+            }
+        },
+        _ => {},
+    }
+    obj
+}
+
+/// Check if the string 's' can be represented by a `isize` integer
+/// (that is, is a number that fits into `isize` without any other space or
+/// character before or after the digits).
+/// 
+/// If so, the function returns encoded integer of the string s. 
+/// Otherwise error string is returned.
+fn is_string_representable_as_int(s: &str) -> Result<isize, String> {
+    let mut i = 0isize;
+    match s.parse() {
+        Ok(v) => { i = v; },
+        Err(e) => { return Err(e.to_string()); },
+    }
+
+    // If the number converted back into a string is not identical
+    // then it's not possible to encode the string as integer
+    if !i.to_string().eq(s) {
+        return Err("failed to encode".to_string());
+    }
+    Ok(i)
 }

@@ -434,9 +434,24 @@ impl RedisClient {
     }
     pub fn lookup_key_read(&self, key: &str) -> Option<Arc<RedisObject>> {
         self.expire_if_needed(key);
+        self.lookup_key(key)
+    }
+    pub fn lookup_key_write(&self, key: &str) -> Option<Arc<RedisObject>> {
+        self.delete_if_volatile(key);
+        self.lookup_key(key)
+    }
+    fn lookup_key(&self, key: &str) -> Option<Arc<RedisObject>> {
         let db = self.db.clone().expect("db doesn't exist");
         let db_r = db.read().unwrap();
-        db_r.dict.get(key).map(|e| e.clone())
+        match db_r.dict.get(key) {
+            Some(v) => {
+                // TODO: vm related
+                Some(v.clone())
+            },
+            None => {
+                None
+            }
+        }
     }
     pub fn insert(&self, key: &str, value: Arc<RedisObject>) {
         let db = self.db.clone().expect("db doesn't exist");

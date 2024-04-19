@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::{BitOr, Deref}, sync::Arc};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
-use super::{client::RedisClient, obj::{RedisObject, C_ONE, C_ZERO, OK}, server_write};
+use super::{client::RedisClient, obj::{try_object_encoding, RedisObject, C_ONE, C_ZERO, OK}, server_write};
 
 
 /// 
@@ -224,11 +224,44 @@ fn setnx_command(c: &mut RedisClient) {
 }
 
 fn mset_command(c: &mut RedisClient) {
-    
+    mset_generic_command(c, false);
+}
+
+fn mset_generic_command(c: &mut RedisClient, nx: bool) {
+    if c.argv.len() % 2 == 0 {
+        c.add_reply_str("-ERR wrong number of arguments for MSET\r\n");
+        return;
+    }
+
+    // Handle the NX flag. The MSETNX semantic is to return zero and don't
+    // set nothing at all if at least one already key exists.
+    let mut busy_keys = 0;
+    if nx {
+        for i in (1..c.argv.len()).step_by(2) {
+            if c.lookup_key_write(c.argv[i].as_key()).is_some() {
+                busy_keys += 1;
+            }
+        }
+    }
+    if busy_keys > 0 {
+        c.add_reply(C_ZERO.clone());
+        return;
+    }
+
+    for i in (1..c.argv.len()).step_by(2) {
+        c.argv[i + 1] = try_object_encoding(c.argv[i + 1].clone());
+        c.insert(c.argv[i].as_key(), c.argv[i + 1].clone());
+        c.remove_expire(c.argv[i].as_key());
+    }
+    server_write().dirty += (c.argv.len() as u128 - 1) / 2;
+    match nx {
+        true => { c.add_reply(C_ONE.clone()); }
+        false => { c.add_reply(OK.clone()); }
+    }
 }
 
 fn msetnx_command(c: &mut RedisClient) {
-    
+    mset_generic_command(c, true);
 }
 
 fn incr_command(c: &mut RedisClient) {
