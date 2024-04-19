@@ -1,7 +1,7 @@
-use std::{borrow::Borrow, collections::HashMap, ops::{BitOr, Deref}, sync::Arc};
+use std::{borrow::Borrow, collections::{HashMap, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
-use super::{client::RedisClient, obj::{try_object_encoding, RedisObject, StringStorageType, COLON, CRLF, C_ONE, C_ZERO, OK}, server_write};
+use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, StringStorageType, COLON, CRLF, C_ONE, C_ZERO, OK}, server_write};
 
 
 /// 
@@ -398,15 +398,15 @@ fn incr_command(c: &mut RedisClient) {
 }
 
 fn incrby_command(c: &mut RedisClient) {
-    let mut i = 0i128;
+    let mut _i = 0i128;
     match c.argv[2].as_key().parse() {
-        Ok(v) => { i = v; },
+        Ok(v) => { _i = v; },
         Err(e) => {
             log(LogLevel::Warning, &e.to_string());
             return;
         },
     }
-    incr_decr_command(c, i);
+    incr_decr_command(c, _i);
 }
 
 fn decr_command(c: &mut RedisClient) {
@@ -414,15 +414,15 @@ fn decr_command(c: &mut RedisClient) {
 }
 
 fn decrby_command(c: &mut RedisClient) {
-    let mut i = 0i128;
+    let mut _i = 0i128;
     match c.argv[2].as_key().parse() {
-        Ok(v) => { i = v; },
+        Ok(v) => { _i = v; },
         Err(e) => {
             log(LogLevel::Warning, &e.to_string());
             return;
         },
     }
-    incr_decr_command(c, -i);
+    incr_decr_command(c, -_i);
 }
 
 fn incr_decr_command(c: &mut RedisClient, incr: i128) {
@@ -466,12 +466,94 @@ fn incr_decr_command(c: &mut RedisClient, incr: i128) {
 // list
 // 
 
+enum ListWhere {
+    Head,
+    Tail,
+}
+
 fn rpush_command(c: &mut RedisClient) {
-    
+    push_generic_command(c, ListWhere::Tail);
 }
 
 fn lpush_command(c: &mut RedisClient) {
-    
+    push_generic_command(c, ListWhere::Head);
+}
+
+fn push_generic_command(c: &mut RedisClient, place: ListWhere) {
+    let mut len = 0usize;
+    match c.lookup_key_write(c.argv[1].as_key()) {
+        None => {
+            match handle_clients_waiting_list_push(c, c.argv[1].as_key(), c.argv[2].clone()) {
+                ListWaiting::Waiting => {
+                    c.add_reply(C_ONE.clone());
+                    return;
+                },
+                ListWaiting::NoWait => {
+                    let l = ListStorageType::LinkedList(Arc::new(RwLock::new(LinkedList::new())));
+                    match place {
+                        ListWhere::Head => { l.push_front(c.argv[2].clone()); },
+                        ListWhere::Tail => { l.push_back(c.argv[2].clone()); },
+                    }
+                    len = l.len();
+                    c.insert(c.argv[1].as_key(), Arc::new(RedisObject::List { l }));
+                },
+            }
+        },
+        Some(lobj) => {
+            match lobj.borrow() {
+                RedisObject::List { l } => {
+                    match handle_clients_waiting_list_push(c, c.argv[1].as_key(), c.argv[2].clone()) {
+                        ListWaiting::Waiting => {
+                            c.add_reply(C_ONE.clone());
+                            return;
+                        },
+                        ListWaiting::NoWait => {
+                            match place {
+                                ListWhere::Head => { l.push_front(c.argv[2].clone()); },
+                                ListWhere::Tail => { l.push_back(c.argv[2].clone()); },
+                            }
+                            len = l.len();
+                        },
+                    }
+                },
+                _ => {
+                    c.add_reply(WRONG_TYPE_ERR.clone());
+                    return;
+                },
+            }
+        },
+    }
+    server_write().dirty += 1;
+    c.add_reply_str(&format!(":{len}\r\n"));
+}
+
+enum ListWaiting {
+    Waiting,
+    NoWait,
+}
+
+/// This should be called from any function PUSHing into lists.
+/// 'c' is the "pushing client", 'key' is the key it is pushing data against,
+/// 'value' is the element pushed.
+/// 
+/// If the function returns `NoWait` there was no client waiting for a list push
+/// against this key.
+/// 
+/// If the function returns `Waiting` there was a client waiting for a list push
+/// against this key, the element was passed to this client thus it's not
+/// needed to actually add it to the list and the caller should return asap.
+fn handle_clients_waiting_list_push(c: &RedisClient, key: &str, value: Arc<RedisObject>) -> ListWaiting {
+    match c.lookup_blocking_key(key) {
+        None => { ListWaiting::NoWait },
+        Some(l) => {
+            let client = l.front().unwrap().write().unwrap();
+            client.add_reply_str("*2\r\n");
+            client.add_reply_bulk(c.argv[1].clone());
+            client.add_reply_bulk(value);
+            client.unblock_client_waiting_data();
+            ListWaiting::Waiting
+        },
+    }
 }
 
 fn llen_command(c: &mut RedisClient) {

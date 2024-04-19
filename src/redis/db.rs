@@ -1,12 +1,12 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap, LinkedList}, sync::{Arc, RwLock}};
 
-use super::obj::RedisObject;
+use super::{client::RedisClient, obj::RedisObject};
 
 
 pub struct RedisDB {
-    pub dict: HashMap<String, Arc<RedisObject>>,    // The keyspace for this DB
-    pub expires: HashMap<String, u64>,              // Timeout of keys with a timeout set
-    blocking_keys: HashMap<String, String>,     // Keys with clients waiting for data (BLPOP)
+    pub dict: HashMap<String, Arc<RedisObject>>,                                        // The keyspace for this DB
+    pub expires: HashMap<String, u64>,                                                  // Timeout of keys with a timeout set
+    pub blocking_keys: HashMap<String, Arc<LinkedList<Arc<RwLock<RedisClient>>>>>,      // Keys with clients waiting for data (BLPOP)
     io_keys: Option<HashMap<String, String>>,   // Keys with clients waiting for VM I/O
     id: i32,
 }

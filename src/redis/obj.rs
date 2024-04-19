@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, sync::Arc};
+use std::{borrow::Borrow, collections::LinkedList, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 
 
@@ -104,7 +104,9 @@ pub enum RedisObject {
     String {
         ptr: StringStorageType,
     },
-    List,
+    List {
+        l: ListStorageType,
+    },
     Set,
     ZSet,
     Hash,
@@ -148,6 +150,33 @@ impl StringStorageType {
         match self {
             Self::String(s) => { Some(s) },
             _ => { None }
+        }
+    }
+}
+#[derive(Clone)]
+pub enum ListStorageType {
+    LinkedList(Arc<RwLock<LinkedList<Arc<RedisObject>>>>),
+}
+impl ListStorageType {
+    pub fn push_front(&self, obj: Arc<RedisObject>) {
+        match self {
+            Self::LinkedList(l) => {
+                l.write().unwrap().push_front(obj);
+            },
+        }
+    }
+    pub fn push_back(&self, obj: Arc<RedisObject>) {
+        match self {
+            Self::LinkedList(l) => {
+                l.write().unwrap().push_back(obj);
+            },
+        }
+    }
+    pub fn len(&self) -> usize {
+        match self {
+            Self::LinkedList(l) => {
+                l.read().unwrap().len()
+            },
         }
     }
 }

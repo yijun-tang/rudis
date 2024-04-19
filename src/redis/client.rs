@@ -35,7 +35,7 @@ pub fn deleted_clients_write() -> RwLockWriteGuard<'static, HashSet<i32>> {
 /// With multiplexing we need to take per-clinet state.
 /// Clients are taken in a liked list.
 pub struct RedisClient {
-    fd: i32,
+    pub fd: i32,
     pub db: Option<Arc<RwLock<RedisDB>>>,
     pub query_buf: String,
     pub argv: Vec<Arc<RedisObject>>,
@@ -49,7 +49,7 @@ pub struct RedisClient {
     authenticated: bool,            // when requirepass is non-NULL
     repl_state: ReplState,          // replication state if this is a slave
     mstate: MultiState,             // MULTI/EXEC state
-    blocking_keys: Vec<Arc<RedisObject>>,   // The key we are waiting to terminate a blocking
+    blocking_keys: RwLock<Vec<Arc<RedisObject>>>,   // The key we are waiting to terminate a blocking
                                             // operation such as BLPOP. Otherwise NULL.
     io_keys: LinkedList<Arc<RedisObject>>,  // Keys this client is waiting to be loaded from the
                                             // swap file in order to continue.
@@ -74,12 +74,12 @@ impl RedisClient {
             multi_bulk: 0,
             mbargv: Vec::new(),
             sent_len: 0,
-            flags: ClientFlags(0),
+            flags: ClientFlags(RwLock::new(0)),
             last_interaction: timestamp().as_secs(),
             authenticated: false,
             repl_state: ReplState::None,
             reply: RwLock::new(LinkedList::new()),
-            blocking_keys: Vec::new(),
+            blocking_keys: RwLock::new(Vec::new()),
             mstate: MultiState { commands: Vec::new() },
             io_keys: LinkedList::new(),
         };
@@ -98,7 +98,7 @@ impl RedisClient {
             fd: -1, 
             query_buf: String::new(),
             argv: Vec::new(),
-            flags: ClientFlags(0),
+            flags: ClientFlags(RwLock::new(0)),
             // We set the fake client as a slave waiting for the synchronization
             // so that Redis will not try to send replies to this client.
             repl_state: ReplState::WaitBgSaveStart,
@@ -110,7 +110,7 @@ impl RedisClient {
             last_interaction: 0,
             authenticated: false,
             mstate: MultiState { commands: Vec::new() },
-            blocking_keys: Vec::new(),
+            blocking_keys: RwLock::new(Vec::new()),
             io_keys: LinkedList::new(),
         };
 
@@ -453,6 +453,11 @@ impl RedisClient {
             }
         }
     }
+    pub fn lookup_blocking_key(&self, key: &str) -> Option<Arc<LinkedList<Arc<RwLock<RedisClient>>>>> {
+        let db = self.db.clone().expect("db doesn't exist");
+        let db_r = db.read().unwrap();
+        db_r.blocking_keys.get(key).map(|e| e.clone())
+    }
     pub fn insert(&self, key: &str, value: Arc<RedisObject>) {
         let db = self.db.clone().expect("db doesn't exist");
         let mut db_w = db.write().unwrap();
@@ -467,6 +472,42 @@ impl RedisClient {
         let db = self.db.clone().expect("db doesn't exist");
         let db_r = db.read().unwrap();
         db_r.dict.contains_key(key)
+    }
+    fn remove_blocking_key(&self, key: &str) {
+        let db = self.db.clone().expect("db doesn't exist");
+        let mut db_w = db.write().unwrap();
+        db_w.blocking_keys.remove(key);
+    }
+
+    /// Unblock a client that's waiting in a blocking operation such as BLPOP
+    pub fn unblock_client_waiting_data(&self) {
+        // TODO: assert
+        assert!(!self.blocking_keys.read().unwrap().is_empty());
+
+        // The client may wait for multiple keys, so unblock it for every key.
+        for key in self.blocking_keys.read().unwrap().iter() {
+            // Remove this client from the list of clients waiting for this key.
+            let remaining: LinkedList<Arc<RwLock<RedisClient>>> = self.lookup_blocking_key(key.as_key())
+                .expect("blocking clients doesn't exist")
+                .iter().filter(|l| l.read().unwrap().fd != self.fd)
+                .map(|e| e.clone()).collect();
+            // If the list is empty we need to remove it to avoid wasting memory
+            if remaining.is_empty() {
+                self.remove_blocking_key(key.as_key());
+            }
+        }
+        self.blocking_keys.write().unwrap().clear();
+        self.flags.disable(ClientFlags::blocked());
+        server_write().blpop_blocked_clients -= 1;
+        // We want to process data if there is some command waiting
+        // in the input buffer. Note that this is safe even if
+        // unblockClientWaitingData() gets called from freeClient() because
+        // freeClient() will be smart enough to call this function
+        // *after* c->querybuf was set to NULL.
+        // TODO: 
+        /* if !self.query_buf.is_empty() {
+            self.process_input_buf();
+        } */
     }
 
     pub fn delete_if_volatile(&self, key: &str) {
@@ -568,46 +609,49 @@ pub struct MultiState {
 }
 
 
-pub struct ClientFlags(u8);
+pub struct ClientFlags(RwLock<u8>);
 impl ClientFlags {
     /// This client is a slave server
     fn slave() -> ClientFlags {
-        ClientFlags(1)
+        ClientFlags(RwLock::new(1))
     }
     /// This client is a master server
     fn master() -> ClientFlags {
-        ClientFlags(2)
+        ClientFlags(RwLock::new(2))
     }
     /// This client is a slave monitor, see MONITOR
     fn monitor() -> ClientFlags {
-        ClientFlags(4)
+        ClientFlags(RwLock::new(4))
     }
     /// This client is in a MULTI context
     fn multi() -> ClientFlags {
-        ClientFlags(8)
+        ClientFlags(RwLock::new(8))
     }
     /// The client is waiting in a blocking operation
     fn blocked() -> ClientFlags {
-        ClientFlags(16)
+        ClientFlags(RwLock::new(16))
     }
     /// The client is waiting for Virtual Memory I/O
     fn io_wait() -> ClientFlags {
-        ClientFlags(32)
+        ClientFlags(RwLock::new(32))
     }
     pub fn is_slave(&self) -> bool {
-        (self.0 & Self::slave().0) != 0
+        (*self.0.read().unwrap() & *Self::slave().0.read().unwrap()) != 0
     }
     pub fn is_master(&self) -> bool {
-        (self.0 & Self::master().0) != 0
+        (*self.0.read().unwrap() & *Self::master().0.read().unwrap()) != 0
     }
     pub fn is_blocked(&self) -> bool {
-        (self.0 & Self::blocked().0) != 0
+        (*self.0.read().unwrap() & *Self::blocked().0.read().unwrap()) != 0
     }
     fn is_io_wait(&self) -> bool {
-        (self.0 & Self::io_wait().0) != 0
+        (*self.0.read().unwrap() & *Self::io_wait().0.read().unwrap()) != 0
     }
     fn is_multi(&self) -> bool {
-        (self.0 & Self::multi().0) != 0
+        (*self.0.read().unwrap() & *Self::multi().0.read().unwrap()) != 0
+    }
+    fn disable(&self, f: ClientFlags) {
+        *self.0.write().unwrap() &= *f.0.read().unwrap() ^ u8::MAX
     }
 }
 
