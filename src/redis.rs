@@ -21,6 +21,7 @@ pub mod rdb;
 
 
 pub const IO_BUF_LEN: usize = 1024;
+static ONE_GB: i32 = 1024 * 1024 * 1024;
 static MAX_IDLE_TIME: i32 = 60 * 5;             // default client timeout
 static DEFAULT_DBNUM: i32 = 16;
 static SERVER_PORT: u16 = 6379;

@@ -2,7 +2,7 @@ use std::{collections::{HashSet, LinkedList}, ops::Deref, sync::{Arc, RwLock, Rw
 use libc::close;
 use once_cell::sync::Lazy;
 use crate::{ae::{create_file_event, delete_file_event, el::Mask, handler::{read_query_from_client, send_reply_to_client}}, anet::{nonblock, tcp_no_delay}, redis::{cmd::lookup_command, server_read, server_write}, util::{log, timestamp, LogLevel}, zmalloc::used_memory};
-use super::{cmd::{call, MultiCmd, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType, CRLF}, RedisDB, ReplState};
+use super::{cmd::{call, MultiCmd, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType, CRLF}, RedisDB, ReplState, ONE_GB};
 
 
 /// 
@@ -252,7 +252,7 @@ impl RedisClient {
                         },
                     }
                     self.argv.clear();
-                    if self.bulk_len < 0 || self.bulk_len > 1024*1024*1024 {
+                    if self.bulk_len < 0 || self.bulk_len > ONE_GB {
                         self.add_reply_str("-ERR invalid bulk write count\r\n");
                         self.reset();
                         return true;
@@ -327,7 +327,7 @@ impl RedisClient {
                         },
                     }
 
-                    if self.bulk_len < 0 || self.bulk_len > 1024*1024*1024 {
+                    if self.bulk_len < 0 || self.bulk_len > ONE_GB {
                         self.add_reply_str("-ERR invalid bulk write count\r\n");
                         self.reset();
                         return true;
