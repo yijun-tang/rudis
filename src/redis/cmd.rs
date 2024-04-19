@@ -15,6 +15,25 @@ pub static MAX_SIZE_INLINE_CMD: usize = 1024 * 1024 * 256;  // max bytes in inli
 /// Command Table 
 static CMD_TABLE: Lazy<HashMap<&str, Arc<RedisCommand>>> = Lazy::new(|| {
     HashMap::from([
+        ("ping", Arc::new(RedisCommand { name: "ping", proc: Arc::new(ping_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("exec", Arc::new(RedisCommand { name: "exec", proc: Arc::new(exec_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("discard", Arc::new(RedisCommand { name: "discard", proc: Arc::new(discard_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("auth", Arc::new(RedisCommand { name: "auth", proc: Arc::new(auth_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("exists", Arc::new(RedisCommand { name: "exists", proc: Arc::new(exists_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("del", Arc::new(RedisCommand { name: "del", proc: Arc::new(del_command), arity: -2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("type", Arc::new(RedisCommand { name: "type", proc: Arc::new(type_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("keys", Arc::new(RedisCommand { name: "keys", proc: Arc::new(keys_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("randomkey", Arc::new(RedisCommand { name: "randomkey", proc: Arc::new(randomkey_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("rename", Arc::new(RedisCommand { name: "rename", proc: Arc::new(rename_command), arity: 3, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("renamenx", Arc::new(RedisCommand { name: "renamenx", proc: Arc::new(renamenx_command), arity: 3, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("dbsize", Arc::new(RedisCommand { name: "dbsize", proc: Arc::new(dbsize_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("expire", Arc::new(RedisCommand { name: "expire", proc: Arc::new(expire_command), arity: 3, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("ttl", Arc::new(RedisCommand { name: "ttl", proc: Arc::new(ttl_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("select", Arc::new(RedisCommand { name: "select", proc: Arc::new(select_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("move", Arc::new(RedisCommand { name: "move", proc: Arc::new(move_command), arity: 3, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("flushdb", Arc::new(RedisCommand { name: "flushdb", proc: Arc::new(flushdb_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("flushall", Arc::new(RedisCommand { name: "flushall", proc: Arc::new(flushall_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+
         ("set", Arc::new(RedisCommand { name: "set", proc: Arc::new(set_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
         ("get", Arc::new(RedisCommand { name: "get", proc: Arc::new(get_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
         ("getset", Arc::new(RedisCommand { name: "getset", proc: Arc::new(getset_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
@@ -26,10 +45,49 @@ static CMD_TABLE: Lazy<HashMap<&str, Arc<RedisCommand>>> = Lazy::new(|| {
         ("incrby", Arc::new(RedisCommand { name: "incrby", proc: Arc::new(incrby_command), arity: 3, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
         ("decr", Arc::new(RedisCommand { name: "decr", proc: Arc::new(decr_command), arity: 2, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
         ("decrby", Arc::new(RedisCommand { name: "decrby", proc: Arc::new(decrby_command), arity: 3, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
-
-        ("ping", Arc::new(RedisCommand { name: "ping", proc: Arc::new(ping_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
-        ("exec", Arc::new(RedisCommand { name: "exec", proc: Arc::new(exec_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
-        ("discard", Arc::new(RedisCommand { name: "discard", proc: Arc::new(discard_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("rpush", Arc::new(RedisCommand { name: "rpush", proc: Arc::new(rpush_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("lpush", Arc::new(RedisCommand { name: "lpush", proc: Arc::new(lpush_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("llen", Arc::new(RedisCommand { name: "llen", proc: Arc::new(llen_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("lrange", Arc::new(RedisCommand { name: "lrange", proc: Arc::new(lrange_command), arity: 4, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("ltrim", Arc::new(RedisCommand { name: "ltrim", proc: Arc::new(ltrim_command), arity: 4, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("lindex", Arc::new(RedisCommand { name: "lindex", proc: Arc::new(lindex_command), arity: 3, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("lset", Arc::new(RedisCommand { name: "lset", proc: Arc::new(lset_command), arity: 4, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("lrem", Arc::new(RedisCommand { name: "lrem", proc: Arc::new(lrem_command), arity: 4, flags: CmdFlags::bulk(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("lpop", Arc::new(RedisCommand { name: "lpop", proc: Arc::new(lpop_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("rpop", Arc::new(RedisCommand { name: "rpop", proc: Arc::new(rpop_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("rpoplpush", Arc::new(RedisCommand { name: "rpoplpush", proc: Arc::new(rpoplpush_command), arity: 3, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 2, vm_keystep: 1 })),
+        ("sadd", Arc::new(RedisCommand { name: "sadd", proc: Arc::new(sadd_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("srem", Arc::new(RedisCommand { name: "srem", proc: Arc::new(srem_command), arity: 3, flags: CmdFlags::bulk(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("spop", Arc::new(RedisCommand { name: "spop", proc: Arc::new(spop_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("smove", Arc::new(RedisCommand { name: "smove", proc: Arc::new(smove_command), arity: 4, flags: CmdFlags::bulk(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 2, vm_keystep: 1 })),
+        ("scard", Arc::new(RedisCommand { name: "scard", proc: Arc::new(scard_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("sismember", Arc::new(RedisCommand { name: "sismember", proc: Arc::new(sismember_command), arity: 3, flags: CmdFlags::bulk(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("sinter", Arc::new(RedisCommand { name: "sinter", proc: Arc::new(sinter_command), arity: -2, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: -1, vm_keystep: 1 })),
+        ("sinterstore", Arc::new(RedisCommand { name: "sinterstore", proc: Arc::new(sinterstore_command), arity: -3, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 2, vm_lastkey: -1, vm_keystep: 1 })),
+        ("sunion", Arc::new(RedisCommand { name: "sunion", proc: Arc::new(sunion_command), arity: -2, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: -1, vm_keystep: 1 })),
+        ("sunionstore", Arc::new(RedisCommand { name: "sunionstore", proc: Arc::new(sunionstore_command), arity: -3, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 2, vm_lastkey: -1, vm_keystep: 1 })),
+        ("sdiff", Arc::new(RedisCommand { name: "sdiff", proc: Arc::new(sdiff_command), arity: -2, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: -1, vm_keystep: 1 })),
+        ("sdiffstore", Arc::new(RedisCommand { name: "sdiffstore", proc: Arc::new(sdiffstore_command), arity: -3, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 2, vm_lastkey: -1, vm_keystep: 1 })),
+        ("smembers", Arc::new(RedisCommand { name: "smembers", proc: Arc::new(smembers_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("srandmember", Arc::new(RedisCommand { name: "srandmember", proc: Arc::new(srandmember_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("zadd", Arc::new(RedisCommand { name: "zadd", proc: Arc::new(zadd_command), arity: 4, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("zrem", Arc::new(RedisCommand { name: "zrem", proc: Arc::new(zrem_command), arity: 3, flags: CmdFlags::bulk(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("zincrby", Arc::new(RedisCommand { name: "zincrby", proc: Arc::new(zincrby_command), arity: 4, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("zrange", Arc::new(RedisCommand { name: "zrange", proc: Arc::new(zrange_command), arity: -4, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("zrevrange", Arc::new(RedisCommand { name: "zrevrange", proc: Arc::new(zrevrange_command), arity: -4, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("zrangebyscore", Arc::new(RedisCommand { name: "zrangebyscore", proc: Arc::new(zrangebyscore_command), arity: -4, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("zcard", Arc::new(RedisCommand { name: "zcard", proc: Arc::new(zcard_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("zscore", Arc::new(RedisCommand { name: "zscore", proc: Arc::new(zscore_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("zremrangebyscore", Arc::new(RedisCommand { name: "zremrangebyscore", proc: Arc::new(zremrangebyscore_command), arity: 4, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("sort", Arc::new(RedisCommand { name: "sort", proc: Arc::new(sort_command), arity: -2, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("save", Arc::new(RedisCommand { name: "save", proc: Arc::new(save_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("bgsave", Arc::new(RedisCommand { name: "bgsave", proc: Arc::new(bgsave_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("lastsave", Arc::new(RedisCommand { name: "lastsave", proc: Arc::new(lastsave_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("shutdown", Arc::new(RedisCommand { name: "shutdown", proc: Arc::new(shutdown_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("bgrewriteaof", Arc::new(RedisCommand { name: "bgrewriteaof", proc: Arc::new(bgrewriteaof_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("info", Arc::new(RedisCommand { name: "info", proc: Arc::new(info_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("monitor", Arc::new(RedisCommand { name: "monitor", proc: Arc::new(monitor_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("slaveof", Arc::new(RedisCommand { name: "slaveof", proc: Arc::new(slaveof_command), arity: 3, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
     ])
 });
 pub fn lookup_command(name: &str) -> Option<Arc<RedisCommand>> {
@@ -129,6 +187,77 @@ impl BitOr for CmdFlags {
 fn ping_command(c: &mut RedisClient) {
     c.add_reply(PONG.clone());
 }
+pub fn exec_command(c: &mut RedisClient) {
+    todo!()
+}
+pub fn discard_command(c: &mut RedisClient) {
+    todo!()
+}
+
+fn auth_command(c: &mut RedisClient) {
+
+}
+
+fn exists_command(c: &mut RedisClient) {
+    
+}
+
+fn del_command(c: &mut RedisClient) {
+    
+}
+
+fn type_command(c: &mut RedisClient) {
+    
+}
+
+fn keys_command(c: &mut RedisClient) {
+    
+}
+
+fn randomkey_command(c: &mut RedisClient) {
+    
+}
+
+fn rename_command(c: &mut RedisClient) {
+    
+}
+
+fn renamenx_command(c: &mut RedisClient) {
+    
+}
+
+fn dbsize_command(c: &mut RedisClient) {
+    
+}
+
+fn expire_command(c: &mut RedisClient) {
+    
+}
+
+
+fn ttl_command(c: &mut RedisClient) {
+    
+}
+
+fn select_command(c: &mut RedisClient) {
+    
+}
+
+fn move_command(c: &mut RedisClient) {
+    
+}
+
+fn flushdb_command(c: &mut RedisClient) {
+    
+}
+
+fn flushall_command(c: &mut RedisClient) {
+    
+}
+
+// 
+// string
+// 
 
 fn get_command(c: &mut RedisClient) {
     match get_generic_command(c) {
@@ -333,11 +462,186 @@ fn incr_decr_command(c: &mut RedisClient, incr: i128) {
     c.add_reply(CRLF.clone());
 }
 
-pub fn exec_command(c: &mut RedisClient) {
-    todo!()
+// 
+// list
+// 
+
+fn rpush_command(c: &mut RedisClient) {
+    
 }
 
-pub fn discard_command(c: &mut RedisClient) {
-    todo!()
+fn lpush_command(c: &mut RedisClient) {
+    
 }
 
+fn llen_command(c: &mut RedisClient) {
+    
+}
+
+fn lrange_command(c: &mut RedisClient) {
+    
+}
+
+fn ltrim_command(c: &mut RedisClient) {
+    
+}
+
+fn lindex_command(c: &mut RedisClient) {
+    
+}
+
+fn lset_command(c: &mut RedisClient) {
+    
+}
+
+fn lrem_command(c: &mut RedisClient) {
+    
+}
+
+fn lpop_command(c: &mut RedisClient) {
+    
+}
+
+fn rpop_command(c: &mut RedisClient) {
+    
+}
+
+fn rpoplpush_command(c: &mut RedisClient) {
+    
+}
+
+// 
+// set
+// 
+
+fn sadd_command(c: &mut RedisClient) {
+    
+}
+
+fn srem_command(c: &mut RedisClient) {
+    
+}
+
+fn spop_command(c: &mut RedisClient) {
+    
+}
+
+fn smove_command(c: &mut RedisClient) {
+    
+}
+
+fn scard_command(c: &mut RedisClient) {
+    
+}
+
+fn sismember_command(c: &mut RedisClient) {
+    
+}
+
+fn sinter_command(c: &mut RedisClient) {
+    
+}
+
+fn sinterstore_command(c: &mut RedisClient) {
+    
+}
+
+fn sunion_command(c: &mut RedisClient) {
+    
+}
+
+fn sunionstore_command(c: &mut RedisClient) {
+    
+}
+
+fn sdiff_command(c: &mut RedisClient) {
+    
+}
+
+fn sdiffstore_command(c: &mut RedisClient) {
+    
+}
+
+fn smembers_command(c: &mut RedisClient) {
+    
+}
+
+fn srandmember_command(c: &mut RedisClient) {
+    
+}
+
+// 
+// sorted set
+// 
+
+fn zadd_command(c: &mut RedisClient) {
+    
+}
+
+fn zrem_command(c: &mut RedisClient) {
+    
+}
+
+fn zincrby_command(c: &mut RedisClient) {
+    
+}
+
+fn zrange_command(c: &mut RedisClient) {
+    
+}
+
+fn zrevrange_command(c: &mut RedisClient) {
+    
+}
+
+fn zrangebyscore_command(c: &mut RedisClient) {
+    
+}
+
+fn zcard_command(c: &mut RedisClient) {
+    
+}
+
+fn zscore_command(c: &mut RedisClient) {
+    
+}
+
+fn zremrangebyscore_command(c: &mut RedisClient) {
+    
+}
+
+fn sort_command(c: &mut RedisClient) {
+    
+}
+
+fn save_command(c: &mut RedisClient) {
+    
+}
+
+fn bgsave_command(c: &mut RedisClient) {
+    
+}
+
+fn lastsave_command(c: &mut RedisClient) {
+    
+}
+
+fn shutdown_command(c: &mut RedisClient) {
+    
+}
+
+fn bgrewriteaof_command(c: &mut RedisClient) {
+    
+}
+
+fn info_command(c: &mut RedisClient) {
+    
+}
+
+fn monitor_command(c: &mut RedisClient) {
+    
+}
+
+fn slaveof_command(c: &mut RedisClient) {
+    
+}
