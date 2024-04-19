@@ -1,7 +1,7 @@
-use std::{collections::HashMap, ops::{BitOr, Deref}, sync::Arc};
+use std::{borrow::Borrow, collections::HashMap, ops::{BitOr, Deref}, sync::Arc};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
-use super::{client::RedisClient, obj::{try_object_encoding, RedisObject, C_ONE, C_ZERO, OK}, server_write};
+use super::{client::RedisClient, obj::{try_object_encoding, RedisObject, StringStorageType, COLON, CRLF, C_ONE, C_ZERO, OK}, server_write};
 
 
 /// 
@@ -265,19 +265,72 @@ fn msetnx_command(c: &mut RedisClient) {
 }
 
 fn incr_command(c: &mut RedisClient) {
-    
+    incr_decr_command(c, 1);
 }
 
 fn incrby_command(c: &mut RedisClient) {
-    
+    let mut i = 0i128;
+    match c.argv[2].as_key().parse() {
+        Ok(v) => { i = v; },
+        Err(e) => {
+            log(LogLevel::Warning, &e.to_string());
+            return;
+        },
+    }
+    incr_decr_command(c, i);
 }
 
 fn decr_command(c: &mut RedisClient) {
-    
+    incr_decr_command(c, -1);
 }
 
 fn decrby_command(c: &mut RedisClient) {
-    
+    let mut i = 0i128;
+    match c.argv[2].as_key().parse() {
+        Ok(v) => { i = v; },
+        Err(e) => {
+            log(LogLevel::Warning, &e.to_string());
+            return;
+        },
+    }
+    incr_decr_command(c, -i);
+}
+
+fn incr_decr_command(c: &mut RedisClient, incr: i128) {
+    let mut value = 0i128;
+    match c.lookup_key_write(c.argv[1].as_key()) {
+        None => {},
+        Some(v) => {
+            match v.borrow() {
+                RedisObject::String { ptr } => {
+                    match ptr {
+                        StringStorageType::String(s) => {
+                            match s.parse() {
+                                Ok(v) => { value = v; },
+                                Err(e) => {
+                                    log(LogLevel::Warning, &e.to_string());
+                                    return;
+                                },
+                            }
+                        },
+                        StringStorageType::Integer(n) => { value = *n as i128; },
+                    }
+                },
+                _ => {},
+            }
+        },
+    }
+
+    value += incr;
+    let obj = RedisObject::String { ptr: StringStorageType::String(value.to_string()) };
+    let encoded_obj = try_object_encoding(Arc::new(obj));
+    c.insert(c.argv[1].as_key(), encoded_obj.clone());
+
+    c.remove_expire(c.argv[1].as_key());
+    server_write().dirty += 1;
+    c.add_reply(COLON.clone());
+    c.add_reply(encoded_obj);
+    c.add_reply(CRLF.clone());
 }
 
 pub fn exec_command(c: &mut RedisClient) {
