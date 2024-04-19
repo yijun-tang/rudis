@@ -43,7 +43,7 @@ pub struct RedisClient {
     bulk_len: i32,                  // bulk read len. -1 if not in bulk read mode
     multi_bulk: i32,                // multi bulk command format active
     pub sent_len: usize,
-    pub reply: LinkedList<Arc<RedisObject>>,
+    pub reply: RwLock<LinkedList<Arc<RedisObject>>>,
     pub flags: ClientFlags,
     pub last_interaction: u64,          // time of the last interaction, used for timeout (in seconds)
     authenticated: bool,            // when requirepass is non-NULL
@@ -78,7 +78,7 @@ impl RedisClient {
             last_interaction: timestamp().as_secs(),
             authenticated: false,
             repl_state: ReplState::None,
-            reply: LinkedList::new(),
+            reply: RwLock::new(LinkedList::new()),
             blocking_keys: Vec::new(),
             mstate: MultiState { commands: Vec::new() },
             io_keys: LinkedList::new(),
@@ -102,7 +102,7 @@ impl RedisClient {
             // We set the fake client as a slave waiting for the synchronization
             // so that Redis will not try to send replies to this client.
             repl_state: ReplState::WaitBgSaveStart,
-            reply: LinkedList::new(),
+            reply: RwLock::new(LinkedList::new()),
             mbargv: Vec::new(),
             bulk_len: 0,
             multi_bulk: 0,
@@ -382,8 +382,9 @@ impl RedisClient {
         };
     }
 
-    pub fn add_reply(&mut self, obj: Arc<RedisObject>) {
-        if self.reply.is_empty() &&
+    pub fn add_reply(&self, obj: Arc<RedisObject>) {
+        let mut reply_w = self.reply.write().unwrap();
+        if reply_w.is_empty() &&
             (self.repl_state == ReplState::None ||
              self.repl_state == ReplState::Online) &&
             create_file_event(self.fd, Mask::Writable, 
@@ -393,16 +394,14 @@ impl RedisClient {
 
         // TODO: vm related
 
-        self.reply.push_back(Arc::new(obj.get_decoded()));
+        reply_w.push_back(Arc::new(obj.get_decoded()));
     }
-
-    pub fn add_reply_bulk(&mut self, obj: Arc<RedisObject>) {
+    pub fn add_reply_bulk(&self, obj: Arc<RedisObject>) {
         self.add_reply_bulk_len(obj.clone());
         self.add_reply(obj);
         self.add_reply(CRLF.clone());
     }
-
-    fn add_reply_bulk_len(&mut self, obj: Arc<RedisObject>) {
+    fn add_reply_bulk_len(&self, obj: Arc<RedisObject>) {
         let mut len = 0usize;
         match obj.deref() {
             RedisObject::String { ptr } => {
@@ -420,12 +419,11 @@ impl RedisClient {
         }
         self.add_reply_str(&format!("${len}\r\n"));
     }
-
-    fn add_reply_str(&mut self, s: &str) {
+    fn add_reply_str(&self, s: &str) {
         self.add_reply(Arc::new(RedisObject::String { ptr: StringStorageType::String(s.to_string()) }));
     }
 
-    pub fn lookup_key_read_or_reply(&mut self, key: &str, obj: Arc<RedisObject>) -> Option<Arc<RedisObject>> {
+    pub fn lookup_key_read_or_reply(&self, key: &str, obj: Arc<RedisObject>) -> Option<Arc<RedisObject>> {
         let db = self.db.clone().expect("db doesn't exist");
         let db_r = db.read().unwrap();
         match db_r.dict.get(key) {
@@ -435,6 +433,26 @@ impl RedisClient {
             },
             Some(v) => { Some(v.clone()) },
         }
+    }
+    pub fn insert(&self, key: &str, value: Arc<RedisObject>) {
+        let db = self.db.clone().expect("db doesn't exist");
+        let mut db_w = db.write().unwrap();
+        db_w.dict.insert(key.to_string(), value);
+    }
+    pub fn remove_expire(&self, key: &str) {
+        let db = self.db.clone().expect("db doesn't exist");
+        let mut db_w = db.write().unwrap();
+        db_w.expires.remove(key);
+    }
+
+    pub fn has_reply(&self) -> bool {
+        !self.reply.read().unwrap().is_empty()
+    }
+    pub fn reply_front(&self) -> Option<Arc<RedisObject>> {
+        self.reply.read().unwrap().front().map(|r| r.clone())
+    }
+    pub fn reply_pop_front(&self) {
+        self.reply.write().unwrap().pop_front();
     }
 
     fn select_db(&mut self, id: i32) {

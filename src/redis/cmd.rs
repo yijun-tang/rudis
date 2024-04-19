@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, collections::HashMap, ops::{BitOr, Deref}, sync::Arc};
+use std::{collections::HashMap, ops::{BitOr, Deref}, sync::Arc};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
 use super::{client::RedisClient, obj::{RedisObject, C_ONE, OK}, server_write};
@@ -15,8 +15,18 @@ pub static MAX_SIZE_INLINE_CMD: usize = 1024 * 1024 * 256;  // max bytes in inli
 /// Command Table 
 static CMD_TABLE: Lazy<HashMap<&str, Arc<RedisCommand>>> = Lazy::new(|| {
     HashMap::from([
-        ("get", Arc::new(RedisCommand { name: "get", proc: Arc::new(get_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
         ("set", Arc::new(RedisCommand { name: "set", proc: Arc::new(set_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("get", Arc::new(RedisCommand { name: "get", proc: Arc::new(get_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("getset", Arc::new(RedisCommand { name: "getset", proc: Arc::new(getset_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("mget", Arc::new(RedisCommand { name: "mget", proc: Arc::new(mget_command), arity: -2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: -1, vm_keystep: 1 })),
+        ("setnx", Arc::new(RedisCommand { name: "setnx", proc: Arc::new(setnx_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
+        ("mset", Arc::new(RedisCommand { name: "mset", proc: Arc::new(mset_command), arity: -3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: -1, vm_keystep: 2 })),
+        ("msetnx", Arc::new(RedisCommand { name: "msetnx", proc: Arc::new(msetnx_command), arity: -3, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: -1, vm_keystep: 2 })),
+        ("incr", Arc::new(RedisCommand { name: "incr", proc: Arc::new(incr_command), arity: 2, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("incrby", Arc::new(RedisCommand { name: "incrby", proc: Arc::new(incrby_command), arity: 3, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("decr", Arc::new(RedisCommand { name: "decr", proc: Arc::new(decr_command), arity: 2, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("decrby", Arc::new(RedisCommand { name: "decrby", proc: Arc::new(decrby_command), arity: 3, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+
         ("ping", Arc::new(RedisCommand { name: "ping", proc: Arc::new(ping_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
         ("exec", Arc::new(RedisCommand { name: "exec", proc: Arc::new(exec_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
         ("discard", Arc::new(RedisCommand { name: "discard", proc: Arc::new(discard_command), arity: 1, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 0, vm_lastkey: 0, vm_keystep: 0 })),
@@ -128,9 +138,8 @@ fn get_command(c: &mut RedisClient) {
         },
     }
 }
-fn get_generic_command(c: &mut RedisClient) -> Result<(), String> {
-    let key = c.argv[1].string().unwrap().string().unwrap().to_string();
-    match c.lookup_key_read_or_reply(&key, NULL_BULK.clone()) {
+fn get_generic_command(c: &RedisClient) -> Result<(), String> {
+    match c.lookup_key_read_or_reply(c.argv[1].as_key(), NULL_BULK.clone()) {
         None => Ok(()),
         Some(v) => {
             match v.deref() {
@@ -155,19 +164,62 @@ fn set_generic_command(c: &mut RedisClient, nx: bool) {
         // TODO: delete if volatile
     }
 
-    let key = c.argv[1].string().unwrap().string().unwrap();
-    let db = c.db.clone().expect("db doesn't exist");
-    let mut db_w = db.write().unwrap();
-    db_w.dict.insert(key.to_string(), c.argv[2].clone());
+    c.insert(c.argv[1].as_key(), c.argv[2].clone());
     // TODO: if failed to insert
 
     server_write().dirty += 1;
-    db_w.remove_expire(key);
+    c.remove_expire(c.argv[1].as_key());
     if nx {
         c.add_reply(C_ONE.clone());
     } else {
         c.add_reply(OK.clone());
     }
+}
+
+fn getset_command(c: &mut RedisClient) {
+    match get_generic_command(c) {
+        Ok(_) => {},
+        Err(e) => {
+            log(LogLevel::Warning, &e);
+            return;
+        }
+    }
+
+    c.insert(c.argv[1].as_key(), c.argv[2].clone());
+    server_write().dirty += 1;
+    c.remove_expire(c.argv[1].as_key());
+}
+
+fn mget_command(c: &mut RedisClient) {
+    
+}
+
+fn setnx_command(c: &mut RedisClient) {
+    
+}
+
+fn mset_command(c: &mut RedisClient) {
+    
+}
+
+fn msetnx_command(c: &mut RedisClient) {
+    
+}
+
+fn incr_command(c: &mut RedisClient) {
+    
+}
+
+fn incrby_command(c: &mut RedisClient) {
+    
+}
+
+fn decr_command(c: &mut RedisClient) {
+    
+}
+
+fn decrby_command(c: &mut RedisClient) {
+    
 }
 
 pub fn exec_command(c: &mut RedisClient) {

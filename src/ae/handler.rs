@@ -52,7 +52,7 @@ pub fn server_cron(id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) ->
         for i in 0..server.dbnum() {
             let size = server.dbs()[i as usize].read().unwrap().dict.capacity();
             let used = server.dbs()[i as usize].read().unwrap().dict.len();
-            let vkeys = server.dbs()[i as usize].read().unwrap().expires().len();
+            let vkeys = server.dbs()[i as usize].read().unwrap().expires.len();
             if (loops % 5 == 0) && (used != 0 || vkeys != 0) {
                 log(LogLevel::Verbose, &format!("DB {}: {} keys ({} volatile) in {} slots HT.", i, used, vkeys, size));
             }
@@ -136,17 +136,17 @@ pub fn send_reply_to_client(fd: i32, mask: Mask) {
     let mut obj_len: usize = 0;
     let mut n_written: isize = 0;
     let mut tot_written: usize = 0;
-    while client.reply.len() > 0 {
+    while client.has_reply() {
         // TODO: glue output buf
 
-        match client.reply.front().unwrap().borrow() {
+        match client.reply_front().unwrap().borrow() {
             RedisObject::String { ptr } => {
                 match ptr {
                     StringStorageType::String(s) => {
                         let bytes = s.as_bytes();
                         obj_len =  bytes.len();
                         if obj_len == 0 {
-                            client.reply.pop_front();
+                            client.reply_pop_front();
                             continue;
                         }
 
@@ -164,7 +164,7 @@ pub fn send_reply_to_client(fd: i32, mask: Mask) {
                         tot_written += n_written as usize;
                         // If we fully sent the object on head go to the next one
                         if client.sent_len == obj_len {
-                            client.reply.pop_front();
+                            client.reply_pop_front();
                             client.sent_len = 0;
                         }
 
@@ -195,7 +195,7 @@ pub fn send_reply_to_client(fd: i32, mask: Mask) {
     if tot_written > 0 {
         client.last_interaction = timestamp().as_secs();
     }
-    if client.reply.len() == 0 {
+    if !client.has_reply() {
         client.sent_len = 0;
         delete_file_event(client.fd(), Mask::Writable);
     }

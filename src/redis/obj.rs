@@ -110,6 +110,10 @@ pub enum RedisObject {
     Hash,
 }
 impl RedisObject {
+    pub fn as_key(&self) -> &str {
+        self.string().unwrap().string().unwrap()
+    }
+
     pub fn string(&self) -> Option<&StringStorageType> {
         match self {
             Self::String {ptr} => { Some(ptr) },

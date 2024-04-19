@@ -5,7 +5,7 @@ use super::obj::RedisObject;
 
 pub struct RedisDB {
     pub dict: HashMap<String, Arc<RedisObject>>,              // The keyspace for this DB
-    expires: HashMap<String, String>,           // Timeout of keys with a timeout set
+    pub expires: HashMap<String, String>,           // Timeout of keys with a timeout set
     blocking_keys: HashMap<String, String>,     // Keys with clients waiting for data (BLPOP)
     io_keys: Option<HashMap<String, String>>,   // Keys with clients waiting for VM I/O
     id: i32,
@@ -18,13 +18,5 @@ impl RedisDB {
             io_keys = Some(HashMap::new());
         }
         RedisDB { dict: HashMap::new(), expires: HashMap::new(), blocking_keys: HashMap::new(), io_keys, id }
-    }
-
-    pub fn remove_expire(&mut self, key: &str) {
-        self.expires.remove(key);
-    }
-
-    pub fn expires(&self) -> &HashMap<String, String> {
-        &self.expires
     }
 }
