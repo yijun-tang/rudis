@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::{BitOr, Deref}, sync::Arc};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
-use super::{client::RedisClient, obj::{RedisObject, C_ONE, OK}, server_write};
+use super::{client::RedisClient, obj::{RedisObject, C_ONE, C_ZERO, OK}, server_write};
 
 
 /// 
@@ -161,18 +161,28 @@ fn set_command(c: &mut RedisClient) {
 }
 fn set_generic_command(c: &mut RedisClient, nx: bool) {
     if nx {
-        // TODO: delete if volatile
+        c.delete_if_volatile(c.argv[1].as_key());
     }
 
+    if c.contains(c.argv[1].as_key()) {
+        if nx {
+            c.add_reply(C_ZERO.clone());
+            return;
+        } else {
+            // If the key is about a swapped value, we want a new key object
+            // to overwrite the old. So we delete the old key in the database.
+            // This will also make sure that swap pages about the old object
+            // will be marked as free.
+            // TODO: vm related   
+        }
+    }
     c.insert(c.argv[1].as_key(), c.argv[2].clone());
-    // TODO: if failed to insert
 
     server_write().dirty += 1;
     c.remove_expire(c.argv[1].as_key());
-    if nx {
-        c.add_reply(C_ONE.clone());
-    } else {
-        c.add_reply(OK.clone());
+    match nx {
+        true => { c.add_reply(C_ONE.clone()); }
+        false => { c.add_reply(OK.clone()); }
     }
 }
 
@@ -210,7 +220,7 @@ fn mget_command(c: &mut RedisClient) {
 }
 
 fn setnx_command(c: &mut RedisClient) {
-    
+    set_generic_command(c, true);
 }
 
 fn mset_command(c: &mut RedisClient) {

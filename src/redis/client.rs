@@ -448,7 +448,27 @@ impl RedisClient {
         let mut db_w = db.write().unwrap();
         db_w.expires.remove(key);
     }
+    pub fn contains(&self, key: &str) -> bool {
+        let db = self.db.clone().expect("db doesn't exist");
+        let db_r = db.read().unwrap();
+        db_r.dict.contains_key(key)
+    }
 
+    pub fn delete_if_volatile(&self, key: &str) {
+        let db = self.db.clone().expect("db doesn't exist");
+        let db_r = db.read().unwrap();
+        let when_expire = db_r.expires.get(key);
+
+        // No expire? return ASAP
+        if db_r.expires.is_empty() || when_expire.is_none() {
+            return;
+        }
+
+        server_write().dirty += 1;
+        let mut db_w = db.write().unwrap();
+        db_w.expires.remove(key);
+        db_w.dict.remove(key);
+    }
     fn expire_if_needed(&self, key: &str) {
         let db = self.db.clone().expect("db doesn't exist");
         let db_r = db.read().unwrap();
