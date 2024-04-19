@@ -419,20 +419,24 @@ impl RedisClient {
         }
         self.add_reply_str(&format!("${len}\r\n"));
     }
-    fn add_reply_str(&self, s: &str) {
+    pub fn add_reply_str(&self, s: &str) {
         self.add_reply(Arc::new(RedisObject::String { ptr: StringStorageType::String(s.to_string()) }));
     }
 
     pub fn lookup_key_read_or_reply(&self, key: &str, obj: Arc<RedisObject>) -> Option<Arc<RedisObject>> {
-        let db = self.db.clone().expect("db doesn't exist");
-        let db_r = db.read().unwrap();
-        match db_r.dict.get(key) {
+        match self.lookup_key_read(key) {
             None => {
                 self.add_reply(obj);
                 None
             },
             Some(v) => { Some(v.clone()) },
         }
+    }
+    pub fn lookup_key_read(&self, key: &str) -> Option<Arc<RedisObject>> {
+        self.expire_if_needed(key);
+        let db = self.db.clone().expect("db doesn't exist");
+        let db_r = db.read().unwrap();
+        db_r.dict.get(key).map(|e| e.clone())
     }
     pub fn insert(&self, key: &str, value: Arc<RedisObject>) {
         let db = self.db.clone().expect("db doesn't exist");
@@ -443,6 +447,23 @@ impl RedisClient {
         let db = self.db.clone().expect("db doesn't exist");
         let mut db_w = db.write().unwrap();
         db_w.expires.remove(key);
+    }
+
+    fn expire_if_needed(&self, key: &str) {
+        let db = self.db.clone().expect("db doesn't exist");
+        let db_r = db.read().unwrap();
+        let when_expire = db_r.expires.get(key);
+
+        // No expire? return ASAP
+        if db_r.expires.is_empty() || when_expire.is_none() {
+            return;
+        }
+        if timestamp().as_secs() <= *when_expire.unwrap() {
+            return;
+        }
+        let mut db_w = db.write().unwrap();
+        db_w.expires.remove(key);
+        db_w.dict.remove(key);
     }
 
     pub fn has_reply(&self) -> bool {

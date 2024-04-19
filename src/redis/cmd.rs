@@ -191,7 +191,22 @@ fn getset_command(c: &mut RedisClient) {
 }
 
 fn mget_command(c: &mut RedisClient) {
-    
+    c.add_reply_str(&format!("*{}\r\n", c.argv.len() - 1));
+    for i in 1..c.argv.len() {
+        match c.lookup_key_read(c.argv[i].as_key()) {
+            None => { c.add_reply(NULL_BULK.clone()); },
+            Some(v) => {
+                match v.deref() {
+                    RedisObject::String { ptr: _ } => {
+                        c.add_reply_bulk(v);
+                    },
+                    _ => {
+                        c.add_reply(NULL_BULK.clone());
+                    },
+                }
+            },
+        }
+    }
 }
 
 fn setnx_command(c: &mut RedisClient) {

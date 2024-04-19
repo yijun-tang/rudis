@@ -4,8 +4,8 @@ use super::obj::RedisObject;
 
 
 pub struct RedisDB {
-    pub dict: HashMap<String, Arc<RedisObject>>,              // The keyspace for this DB
-    pub expires: HashMap<String, String>,           // Timeout of keys with a timeout set
+    pub dict: HashMap<String, Arc<RedisObject>>,    // The keyspace for this DB
+    pub expires: HashMap<String, u64>,              // Timeout of keys with a timeout set
     blocking_keys: HashMap<String, String>,     // Keys with clients waiting for data (BLPOP)
     io_keys: Option<HashMap<String, String>>,   // Keys with clients waiting for VM I/O
     id: i32,
