@@ -216,6 +216,31 @@ impl ListStorageType {
             },
         }
     }
+    pub fn set(&self, index: i32, obj: Arc<RedisObject>) -> bool {
+        if 0 <= index && index < self.len() as i32 {
+            let mut new_l: LinkedList<Arc<RedisObject>> = LinkedList::new();
+            match self {
+                Self::LinkedList(l) => {
+                    let mut first_part: LinkedList<Arc<RedisObject>> = l.read().unwrap().iter()
+                                                                        .take(index as usize)
+                                                                        .map(|e| e.clone())
+                                                                        .collect();
+                    new_l.append(&mut first_part);
+                    new_l.push_back(obj);
+                    let mut second_part: LinkedList<Arc<RedisObject>> = l.read().unwrap().iter()
+                                                                        .skip(index as usize + 1)
+                                                                        .map(|e| e.clone())
+                                                                        .collect();
+                    new_l.append(&mut second_part);
+                    let mut l_w = l.write().unwrap();
+                    l_w.clear();
+                    l_w.append(&mut new_l);
+                },
+            }
+            return true;
+        }
+        false
+    }
 }
 
 pub fn try_object_sharing(obj: Arc<RedisObject>) {

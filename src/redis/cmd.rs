@@ -1,7 +1,7 @@
 use std::{borrow::Borrow, collections::{HashMap, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
-use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, StringStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NULL_MULTI_BULK, OK}, server_write};
+use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, StringStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR}, server_write};
 
 
 /// 
@@ -677,7 +677,7 @@ fn lindex_command(c: &mut RedisClient) {
         }
     }
 
-    match c.lookup_key_write_or_reply(c.argv[1].as_key(), NULL_BULK.clone()) {
+    match c.lookup_key_read_or_reply(c.argv[1].as_key(), NULL_BULK.clone()) {
         Some(v) => {
             match v.borrow() {
                 RedisObject::List { l } => {
@@ -697,7 +697,36 @@ fn lindex_command(c: &mut RedisClient) {
 }
 
 fn lset_command(c: &mut RedisClient) {
-    
+    let mut index = 0;
+    match c.argv[2].as_key().parse() {
+        Ok(i) => { index = i; },
+        _ => {
+            log(LogLevel::Warning, &format!("failed to parse args: '{}'", c.argv[2].as_key()));
+            return;
+        }
+    }
+
+    match c.lookup_key_write_or_reply(c.argv[1].as_key(), NO_KEY_ERR.clone()) {
+        Some(v) => {
+            match v.borrow() {
+                RedisObject::List { l } => {
+                    // TODO: range checking more strictly
+                    if index < 0 {
+                        index += l.len() as i32;
+                    }
+                    match l.set(index, c.argv[3].clone()) {
+                        true => {
+                            server_write().dirty += 1;
+                            c.add_reply(OK.clone());
+                        },
+                        false => { c.add_reply(OUT_OF_RANGE_ERR.clone()); },
+                    }
+                },
+                _ => {c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn lrem_command(c: &mut RedisClient) {
