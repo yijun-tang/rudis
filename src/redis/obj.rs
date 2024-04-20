@@ -209,6 +209,13 @@ impl ListStorageType {
             },
         }
     }
+    pub fn index(&self, index: i32) -> Option<Arc<RedisObject>> {
+        match self {
+            Self::LinkedList(l) => {
+                l.read().unwrap().iter().nth(index as usize).map(|e| e.clone())
+            },
+        }
+    }
 }
 
 pub fn try_object_sharing(obj: Arc<RedisObject>) {

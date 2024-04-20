@@ -660,7 +660,7 @@ fn ltrim_command(c: &mut RedisClient) {
                     server_write().dirty += 1;
                     c.add_reply(OK.clone());
                 },
-                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); }
+                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
             }
         },
         None => {},
@@ -668,7 +668,32 @@ fn ltrim_command(c: &mut RedisClient) {
 }
 
 fn lindex_command(c: &mut RedisClient) {
-    
+    let mut index = 0;
+    match c.argv[2].as_key().parse() {
+        Ok(i) => { index = i; },
+        _ => {
+            log(LogLevel::Warning, &format!("failed to parse args: '{}'", c.argv[2].as_key()));
+            return;
+        }
+    }
+
+    match c.lookup_key_write_or_reply(c.argv[1].as_key(), NULL_BULK.clone()) {
+        Some(v) => {
+            match v.borrow() {
+                RedisObject::List { l } => {
+                    if index < 0 {
+                        index += l.len() as i32;
+                    }
+                    match l.index(index) {
+                        Some(e) => { c.add_reply_bulk(e); },
+                        None => { c.add_reply(NULL_BULK.clone()); },
+                    }
+                },
+                _ => {c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn lset_command(c: &mut RedisClient) {
