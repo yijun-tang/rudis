@@ -435,6 +435,15 @@ impl RedisClient {
             Some(v) => { Some(v.clone()) },
         }
     }
+    pub fn lookup_key_write_or_reply(&self, key: &str, obj: Arc<RedisObject>) -> Option<Arc<RedisObject>> {
+        match self.lookup_key_write(key) {
+            None => {
+                self.add_reply(obj);
+                None
+            },
+            Some(v) => { Some(v.clone()) },
+        }
+    }
     pub fn lookup_key_read(&self, key: &str) -> Option<Arc<RedisObject>> {
         self.expire_if_needed(key);
         self.lookup_key(key)

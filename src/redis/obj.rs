@@ -194,6 +194,21 @@ impl ListStorageType {
             },
         }
     }
+    pub fn retain_range(&self, start: i32, end: i32) {
+        match self {
+            Self::LinkedList(l) => {
+                let len = self.len() - ((start + end) as usize);
+                let skip = start as usize;
+                let mut v: LinkedList<Arc<RedisObject>> = l.read().unwrap().iter()
+                                                .skip(skip)
+                                                .take(len)
+                                                .map(|e| e.clone()).collect();
+                let mut l_w = l.write().unwrap();
+                l_w.clear();
+                l_w.append(&mut v);
+            },
+        }
+    }
 }
 
 pub fn try_object_sharing(obj: Arc<RedisObject>) {

@@ -578,6 +578,7 @@ fn lrange_command(c: &mut RedisClient) {
         },
         _ => {
             log(LogLevel::Warning, &format!("failed to parse args: '{}', '{}'", c.argv[2].as_key(), c.argv[3].as_key()));
+            return;
         }
     }
 
@@ -618,7 +619,52 @@ fn lrange_command(c: &mut RedisClient) {
 }
 
 fn ltrim_command(c: &mut RedisClient) {
-    
+    let mut start = 0;
+    let mut end = 0;
+    match (c.argv[2].as_key().parse(), c.argv[3].as_key().parse()) {
+        (Ok(s), Ok(e)) => {
+            start = s;
+            end = e;
+        },
+        _ => {
+            log(LogLevel::Warning, &format!("failed to parse args: '{}', '{}'", c.argv[2].as_key(), c.argv[3].as_key()));
+            return;
+        }
+    }
+
+    match c.lookup_key_write_or_reply(c.argv[1].as_key(), OK.clone()) {
+        Some(v) => {
+            match v.borrow() {
+                RedisObject::List { l } => {
+                    let len = l.len();
+                    let mut ltrim = 0usize;
+                    let mut rtrim = 0usize;
+                    // convert negative indexes
+                    if start < 0 { start += len as i32; }
+                    if end < 0 { end += len as i32; }
+                    if start < 0 { start = 0; }
+                    if end < 0 { end = 0; }
+
+                    // indexes sanity checks
+                    if start > end || start >= len as i32 {
+                        ltrim = len;
+                        rtrim = 0;
+                    } else {
+                        if end > len as i32 { end = len as i32; }
+                        ltrim = start as usize;
+                        rtrim = len - (end as usize);
+                    }
+
+                    // Remove list elements to perform the trim
+                    l.retain_range(ltrim as i32, rtrim as i32);
+                    server_write().dirty += 1;
+                    c.add_reply(OK.clone());
+                },
+                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); }
+            }
+        },
+        None => {},
+    }
 }
 
 fn lindex_command(c: &mut RedisClient) {
