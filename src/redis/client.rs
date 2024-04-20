@@ -413,9 +413,7 @@ impl RedisClient {
                     },
                 }
             }
-            _ => {
-                todo!()
-            },
+            _ => { assert!(false, "impossible code") },
         }
         self.add_reply_str(&format!("${len}\r\n"));
     }

@@ -172,6 +172,20 @@ impl ListStorageType {
             },
         }
     }
+    pub fn pop_front(&self) -> Option<Arc<RedisObject>> {
+        match self {
+            Self::LinkedList(l) => {
+                l.write().unwrap().pop_front()
+            },
+        }
+    }
+    pub fn pop_back(&self) -> Option<Arc<RedisObject>> {
+        match self {
+            Self::LinkedList(l) => {
+                l.write().unwrap().pop_back()
+            },
+        }
+    }
     pub fn len(&self) -> usize {
         match self {
             Self::LinkedList(l) => {

@@ -722,7 +722,7 @@ fn lset_command(c: &mut RedisClient) {
                         false => { c.add_reply(OUT_OF_RANGE_ERR.clone()); },
                     }
                 },
-                _ => {c.add_reply(WRONG_TYPE_ERR.clone()); },
+                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
             }
         },
         None => {},
@@ -754,7 +754,7 @@ fn lrem_command(c: &mut RedisClient) {
                     };
                     c.add_reply_str(&format!(":{}\r\n", removed));
                 },
-                _ => {c.add_reply(WRONG_TYPE_ERR.clone()); },
+                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
             }
         },
         None => {},
@@ -762,15 +762,111 @@ fn lrem_command(c: &mut RedisClient) {
 }
 
 fn lpop_command(c: &mut RedisClient) {
-    
+    pop_generic_command(c, ListWhere::Head);
 }
 
 fn rpop_command(c: &mut RedisClient) {
-    
+    pop_generic_command(c, ListWhere::Tail);
 }
 
+fn pop_generic_command(c: &mut RedisClient, place: ListWhere) {
+    match c.lookup_key_write_or_reply(c.argv[1].as_key(), NULL_BULK.clone()) {
+        Some(v) => {
+            match v.borrow() {
+                RedisObject::List { l } => {
+                    let ele = match place {
+                        ListWhere::Head => { l.pop_front() },
+                        ListWhere::Tail => { l.pop_back() },
+                    };
+                    match ele {
+                        Some(v) => {
+                            c.add_reply_bulk(v);
+                            server_write().dirty += 1;
+                        },
+                        None => { c.add_reply(NULL_BULK.clone()); },
+                    }
+                },
+                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
+}
+
+/// This is the semantic of this command:
+/// RPOPLPUSH srclist dstlist:
+///  IF LLEN(srclist) > 0
+///    element = RPOP srclist
+///    LPUSH dstlist element
+///    RETURN element
+///  ELSE
+///    RETURN nil
+///  END
+/// END
+/// 
+/// The idea is to be able to get an element from a list in a reliable way
+/// since the element is not just returned but pushed against another list
+/// as well. This command was originally proposed by Ezra Zygmuntowicz.
 fn rpoplpush_command(c: &mut RedisClient) {
-    
+    match c.lookup_key_write_or_reply(c.argv[1].as_key(), NULL_BULK.clone()) {
+        Some(v) => {
+            match v.borrow() {
+                RedisObject::List { l } => {
+                    match l.pop_back() {
+                        Some(ele) => {
+                            // element type of destination list isn't correct
+                            let mut obj: Option<Arc<RedisObject>> = None;
+                            match c.lookup_key_write(c.argv[2].as_key()) {
+                                Some(d_obj) => {
+                                    match d_obj.borrow() {
+                                        RedisObject::List { l: _ } => {
+                                            obj = Some(d_obj.clone());
+                                        },
+                                        _ => {
+                                            c.add_reply(WRONG_TYPE_ERR.clone());
+                                            return;
+                                        },
+                                    }
+                                },
+                                None => {},
+                            }
+
+                            // Add the element to the target list (unless it's directly
+                            // passed to some BLPOP-ing client
+                            match handle_clients_waiting_list_push(c, c.argv[2].as_key(), ele.clone()) {
+                                ListWaiting::NoWait => {
+                                    match obj {
+                                        None => {
+                                            // Create the list if the key does not exist
+                                            let new_l = ListStorageType::LinkedList(Arc::new(RwLock::new(LinkedList::new())));
+                                            new_l.push_front(ele.clone());
+                                            c.insert(c.argv[2].as_key(), Arc::new(RedisObject::List { l: new_l }));
+                                        },
+                                        Some(v) => {
+                                            match v.borrow() {
+                                                RedisObject::List { l } => {
+                                                    l.push_front(ele.clone());
+                                                },
+                                                _ => { /* impossible */ },
+                                            }
+                                        },
+                                    }
+                                },
+                                ListWaiting::Waiting => {},
+                            }
+
+                            // Send the element to the client as reply as well
+                            server_write().dirty += 1;
+                            c.add_reply_bulk(ele.clone());
+                        },
+                        None => { c.add_reply(NULL_BULK.clone()); },
+                    }
+                },
+                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 // 
