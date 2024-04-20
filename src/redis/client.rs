@@ -422,6 +422,9 @@ impl RedisClient {
     pub fn add_reply_str(&self, s: &str) {
         self.add_reply(Arc::new(RedisObject::String { ptr: StringStorageType::String(s.to_string()) }));
     }
+    pub fn add_reply_u64(&self, n: u64) {
+        self.add_reply_str(&format!(":{}\r\n", n.to_string()));
+    }
 
     pub fn lookup_key_read_or_reply(&self, key: &str, obj: Arc<RedisObject>) -> Option<Arc<RedisObject>> {
         match self.lookup_key_read(key) {

@@ -1,7 +1,7 @@
 use std::{borrow::Borrow, collections::{HashMap, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
-use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, StringStorageType, COLON, CRLF, C_ONE, C_ZERO, OK}, server_write};
+use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, StringStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NULL_MULTI_BULK, OK}, server_write};
 
 
 /// 
@@ -557,11 +557,64 @@ fn handle_clients_waiting_list_push(c: &RedisClient, key: &str, value: Arc<Redis
 }
 
 fn llen_command(c: &mut RedisClient) {
-    
+    match c.lookup_key_read_or_reply(c.argv[1].as_key(), C_ZERO.clone()) {
+        Some(v) => {
+            match v.borrow() {
+                RedisObject::List { l } => { c.add_reply_u64(l.len() as u64); },
+                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn lrange_command(c: &mut RedisClient) {
-    
+    let mut start = 0;
+    let mut end = 0;
+    match (c.argv[2].as_key().parse(), c.argv[3].as_key().parse()) {
+        (Ok(s), Ok(e)) => {
+            start = s;
+            end = e;
+        },
+        _ => {
+            log(LogLevel::Warning, &format!("failed to parse args: '{}', '{}'", c.argv[2].as_key(), c.argv[3].as_key()));
+        }
+    }
+
+    match c.lookup_key_read_or_reply(c.argv[1].as_key(), NULL_MULTI_BULK.clone()) {
+        Some(v) => {
+            match v.borrow() {
+                RedisObject::List { l } => {
+                    let len = l.len();
+                    // convert negative indexes
+                    if start < 0 { start += len as i32; }
+                    if end < 0 { end += len as i32; }
+                    if start < 0 { start = 0; }
+                    if end < 0 { end = 0; }
+
+                    // indexes sanity checks
+                    if start > end || start >= len as i32 {
+                        // Out of range start or start > end result in empty list
+                        c.add_reply(EMPTY_MULTI_BULK.clone());
+                        return;
+                    }
+                    if end >= len as i32 {
+                        end = len as i32 - 1;
+                    }
+                    let range_len = end - start + 1;
+
+                    // Return the result in form of a multi-bulk reply
+                    c.add_reply_str(&format!("*{}\r\n", range_len));
+                    let items = l.range(start, end);
+                    for e in items {
+                        c.add_reply_bulk(e);
+                    }
+                },
+                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn ltrim_command(c: &mut RedisClient) {

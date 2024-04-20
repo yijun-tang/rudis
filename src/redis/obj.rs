@@ -179,6 +179,21 @@ impl ListStorageType {
             },
         }
     }
+    // TODO: lazy loading
+    pub fn range(&self, start: i32, end: i32) -> Vec<Arc<RedisObject>> {
+        match self {
+            Self::LinkedList(l) => {
+                let mut skip = 0usize;
+                if start > 0 { skip = (start - 1) as usize; }
+                let size = (end - start + 1) as usize;
+                let v: Vec<Arc<RedisObject>> = l.read().unwrap().iter()
+                                                .skip(skip)
+                                                .take(size)
+                                                .map(|e| e.clone()).collect();
+                v
+            },
+        }
+    }
 }
 
 pub fn try_object_sharing(obj: Arc<RedisObject>) {
