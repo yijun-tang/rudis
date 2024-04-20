@@ -730,7 +730,35 @@ fn lset_command(c: &mut RedisClient) {
 }
 
 fn lrem_command(c: &mut RedisClient) {
-    
+    let mut to_remove = 0;
+    match c.argv[2].as_key().parse() {
+        Ok(i) => { to_remove = i; },
+        _ => {
+            log(LogLevel::Warning, &format!("failed to parse args: '{}'", c.argv[2].as_key()));
+            return;
+        }
+    }
+
+    match c.lookup_key_write_or_reply(c.argv[1].as_key(), C_ZERO.clone()) {
+        Some(v) => {
+            match v.borrow() {
+                RedisObject::List { l } => {
+                    let mut from_tail = false;
+                    if to_remove < 0 {
+                        to_remove = -to_remove;
+                        from_tail = true;
+                    }
+                    let removed = match from_tail {
+                        false => { l.remove_head(to_remove, c.argv[3].clone()) },
+                        true => { l.remove_tail(to_remove, c.argv[3].clone()) },
+                    };
+                    c.add_reply_str(&format!(":{}\r\n", removed));
+                },
+                _ => {c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn lpop_command(c: &mut RedisClient) {

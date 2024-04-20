@@ -241,6 +241,60 @@ impl ListStorageType {
         }
         false
     }
+    pub fn remove_head(&self, n: i32, obj: Arc<RedisObject>) -> i32 {
+        let mut remaining: LinkedList<Arc<RedisObject>> = LinkedList::new();
+        let mut removed = 0;
+        match self {
+            Self::LinkedList(l) => {
+                {
+                    let l_r = l.read().unwrap();
+                    let mut iter = l_r.iter();
+                    while let Some(e) = iter.next() {
+                        if compare_string_objects(e, &obj) {
+                            removed += 1;
+                            if n > 0 && removed == n { break; }
+                        } else {
+                            remaining.push_back(e.clone());
+                        }
+                    }
+                    while let Some(e) = iter.next() {
+                        remaining.push_back(e.clone());
+                    }
+                }
+                let mut l_w = l.write().unwrap();
+                l_w.clear();
+                l_w.append(&mut remaining);
+                removed
+            },
+        }
+    }
+    pub fn remove_tail(&self, n: i32, obj: Arc<RedisObject>) -> i32 {
+        let mut remaining: LinkedList<Arc<RedisObject>> = LinkedList::new();
+        let mut removed = 0;
+        match self {
+            Self::LinkedList(l) => {
+                {
+                    let l_r = l.read().unwrap();
+                    let mut iter = l_r.iter().rev();
+                    while let Some(e) = iter.next() {
+                        if compare_string_objects(e, &obj) {
+                            removed += 1;
+                            if n > 0 && removed == n { break; }
+                        } else {
+                            remaining.push_front(e.clone());
+                        }
+                    }
+                    while let Some(e) = iter.next() {
+                        remaining.push_front(e.clone());
+                    }
+                }
+                let mut l_w = l.write().unwrap();
+                l_w.clear();
+                l_w.append(&mut remaining);
+                removed
+            },
+        }
+    }
 }
 
 pub fn try_object_sharing(obj: Arc<RedisObject>) {
@@ -297,4 +351,30 @@ fn is_string_representable_as_int(s: &str) -> Result<isize, String> {
         return Err("failed to encode".to_string());
     }
     Ok(i)
+}
+
+/// Compare two string objects via strcmp() or alike.
+/// Note that the objects may be integer-encoded. In such a case we
+/// use snprintf() to get a string representation of the numbers on the stack
+/// and compare the strings, it's much faster than calling getDecodedObject().
+/// 
+/// Important note: if objects are not integer encoded, but binary-safe strings,
+/// sdscmp() from sds.c will apply memcmp() so this function ca be considered
+/// binary safe.
+/// 
+/// NOTE: USING get_decoded() FOR SIMPLICITY
+fn compare_string_objects(obj1: &Arc<RedisObject>, obj2: &Arc<RedisObject>) -> bool {
+    match obj1.borrow() {
+        RedisObject::String { ptr: _ } => {},
+        _ => { return false; }
+    }
+    match obj2.borrow() {
+        RedisObject::String { ptr: _ } => {},
+        _ => { return false; }
+    }
+    if Arc::ptr_eq(obj1, obj2) {
+        return true;
+    }
+    obj1.get_decoded().string().unwrap().string().unwrap()
+        .eq(obj2.get_decoded().string().unwrap().string().unwrap())
 }
