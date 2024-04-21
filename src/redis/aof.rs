@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, io::{BufRead, BufReader, Read}, process::exit, sync::Arc};
+use std::{fs::OpenOptions, io::{BufRead, BufReader, Read}, process::exit, sync::{Arc, RwLock}};
 use crate::{redis::RedisClient, util::{log, LogLevel}, zmalloc::used_memory};
 use super::{cmd::lookup_command, obj::{try_object_encoding, try_object_sharing, RedisObject, StringStorageType}, RedisServer};
 
@@ -50,7 +50,7 @@ impl RedisServer {
                             fmt_err();
                         }
                         let mut argc = 0;
-                        let mut argv: Vec<Arc<RedisObject>> = Vec::new();
+                        let mut argv: Vec<Arc<RwLock<RedisObject>>> = Vec::new();
                         if let Ok(i) = (line[1..]).parse() {
                             argc = i;
                         } else { fmt_err(); }
@@ -73,7 +73,7 @@ impl RedisServer {
                                 match line_a {
                                     Ok(line_a) => {
                                         if line_a.len() != len as usize { fmt_err(); }
-                                        argv.push(Arc::new(RedisObject::String { ptr: StringStorageType::String(line_a) }));
+                                        argv.push(Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String(line_a) })));
                                     },
                                     Err(e) => { read_err(&e.to_string()); },
                                 }
@@ -81,7 +81,8 @@ impl RedisServer {
                         }
 
                         // Command lookup
-                        let name = argv[0].string().unwrap().string().unwrap();
+                        let arg_r = argv[0].read().unwrap();
+                        let name = arg_r.string().unwrap().string().unwrap();
                         match lookup_command(name) {
                             None => {
                                 log(LogLevel::Warning, &format!("Unknown command '{}' reading the append only file", name));

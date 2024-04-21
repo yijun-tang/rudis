@@ -38,8 +38,8 @@ pub struct RedisClient {
     pub fd: i32,
     pub db: Option<Arc<RwLock<RedisDB>>>,
     pub query_buf: String,
-    pub argv: Vec<Arc<RedisObject>>,
-    mbargv: Vec<Arc<RedisObject>>,
+    pub argv: Vec<Arc<RwLock<RedisObject>>>,
+    mbargv: Vec<Arc<RwLock<RedisObject>>>,
     bulk_len: i32,                  // bulk read len. -1 if not in bulk read mode
     multi_bulk: i32,                // multi bulk command format active
     pub sent_len: usize,
@@ -142,9 +142,9 @@ impl RedisClient {
                 }
 
                 // Now we can split the query in arguments
-                let argv: Vec<Arc<RedisObject>> = query.split(" ")
+                let argv: Vec<Arc<RwLock<RedisObject>>> = query.split(" ")
                     .filter(|a| !a.is_empty())
-                    .map(|a| Arc::new(RedisObject::String { ptr: StringStorageType::String(a.to_string()) }))
+                    .map(|a| Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String(a.to_string()) })))
                     .collect();
                 self.argv = argv;
                 if !self.argv.is_empty() {
@@ -188,7 +188,7 @@ impl RedisClient {
                     self.query_buf.push_str("\r\n");
                 }
 
-                self.argv.push(Arc::new(RedisObject::String { ptr: StringStorageType::String(arg.to_string()) }));
+                self.argv.push(Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String(arg.to_string()) })));
 
                 // Process the command. If the client is still valid after
                 // the processing and there is more data in the buffer
@@ -222,16 +222,19 @@ impl RedisClient {
         // protocol is used only for MSET and similar commands this is a big win.
         if self.multi_bulk == 0 && 
             self.argv.len() == 1 && 
-            self.argv[0].deref().string().is_some() &&
-            self.argv[0].deref().string().unwrap().string().is_some() &&
-            self.argv[0].deref().string().unwrap().string().unwrap().starts_with("*") {
+            self.argv[0].read().unwrap().string().is_some() &&
+            self.argv[0].read().unwrap().string().unwrap().string().is_some() &&
+            self.argv[0].read().unwrap().string().unwrap().string().unwrap().starts_with("*") {
             
-            let mbulk = self.argv[0].deref().string().unwrap().string().unwrap();
-            match mbulk[1..].parse() {
-                Ok(n) => { self.multi_bulk = n; },
-                Err(e) => {
-                    log(LogLevel::Warning, &format!("Parsing multi bulk '{}' failed: {}", mbulk, e));
-                },
+            {
+                let arg_r = self.argv[0].read().unwrap();
+                let mbulk = arg_r.string().unwrap().string().unwrap();
+                match mbulk[1..].parse() {
+                    Ok(n) => { self.multi_bulk = n; },
+                    Err(e) => {
+                        log(LogLevel::Warning, &format!("Parsing multi bulk '{}' failed: {}", mbulk, e));
+                    },
+                }
             }
 
             if self.multi_bulk <= 0 {
@@ -243,7 +246,11 @@ impl RedisClient {
             }
         } else if self.multi_bulk != 0 {
             if self.bulk_len == -1 {
-                let bulk = self.argv[0].deref().string().unwrap().string().unwrap();
+                let mut bulk = String::new();
+                {
+                    let arg_r = self.argv[0].read().unwrap();
+                    bulk = arg_r.string().unwrap().string().unwrap().to_string();
+                }
                 if bulk.starts_with("$") {
                     match bulk[1..].parse() {
                         Ok(n) => { self.bulk_len = n; },
@@ -286,18 +293,21 @@ impl RedisClient {
         }
         // -- end of multi bulk commands processing --
 
-        let name_arg = self.argv[0].clone();
-        let name = name_arg.string().unwrap().string().unwrap();
-        // The QUIT command is handled as a special case. Normal command
-        // procs are unable to close the client connection safely
-        if name.eq_ignore_ascii_case("quit") {
-            deleted_clients_write().insert(self.fd);
-            return false;
+        let mut name = String::new();
+        {
+            let name_arg = self.argv[0].read().unwrap();
+            name = name_arg.string().unwrap().string().unwrap().to_string();
+            // The QUIT command is handled as a special case. Normal command
+            // procs are unable to close the client connection safely
+            if name.eq_ignore_ascii_case("quit") {
+                deleted_clients_write().insert(self.fd);
+                return false;
+            }
         }
 
         // Now lookup the command and check ASAP about trivial error conditions
         // such wrong arity, bad command name and so forth.
-        let cmd = lookup_command(name);
+        let cmd = lookup_command(&name);
         match cmd {
             None => {
                 self.add_reply_str(&format!("-ERR unknown command '{}'\r\n", name));
@@ -319,7 +329,8 @@ impl RedisClient {
                 } else if cmd.flags().is_bulk() && self.bulk_len == -1 {
                     // This is a bulk command, we have to read the last argument yet.
                     let last_arg = self.argv.pop().unwrap();
-                    let bulk = last_arg.string().unwrap().string().unwrap();
+                    let last_arg_r = last_arg.read().unwrap();
+                    let bulk = last_arg_r.string().unwrap().string().unwrap();
                     match bulk.parse() {
                         Ok(n) => { self.bulk_len = n; },
                         Err(e) => {
@@ -347,7 +358,7 @@ impl RedisClient {
                             self.query_buf.push_str("\r\n");
                         }
 
-                        self.argv.push(Arc::new(RedisObject::String { ptr: StringStorageType::String(arg.to_string()) }));
+                        self.argv.push(Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String(arg.to_string()) })));
                     } else {
                         // Otherwise return... there is to read the last argument
                         // from the socket.
@@ -382,7 +393,7 @@ impl RedisClient {
         };
     }
 
-    pub fn add_reply(&self, obj: Arc<RedisObject>) {
+    pub fn add_reply(&self, obj: Arc<RwLock<RedisObject>>) {
         let mut reply_w = self.reply.write().unwrap();
         if reply_w.is_empty() &&
             (self.repl_state == ReplState::None ||
@@ -394,37 +405,37 @@ impl RedisClient {
 
         // TODO: vm related
 
-        reply_w.push_back(Arc::new(obj.get_decoded()));
+        reply_w.push_back(Arc::new(obj.read().unwrap().get_decoded()));
     }
-    pub fn add_reply_bulk(&self, obj: Arc<RedisObject>) {
+    pub fn add_reply_bulk(&self, obj: Arc<RwLock<RedisObject>>) {
         self.add_reply_bulk_len(obj.clone());
         self.add_reply(obj);
         self.add_reply(CRLF.clone());
     }
-    fn add_reply_bulk_len(&self, obj: Arc<RedisObject>) {
+    fn add_reply_bulk_len(&self, obj: Arc<RwLock<RedisObject>>) {
         let mut len = 0usize;
-        match obj.deref() {
-            RedisObject::String { ptr } => {
-                match ptr {
+        match obj.read().unwrap().string() {
+            Some(str_storage) => {
+                match str_storage {
                     StringStorageType::String(s) => { len = s.len(); },
                     StringStorageType::Integer(n) => {
                         // Compute how many bytes will take this integer as a radix 10 string
                         len = n.to_string().len();
                     },
                 }
-            }
-            _ => { assert!(false, "impossible code") },
+            },
+            None => { assert!(false, "impossible code"); },
         }
         self.add_reply_str(&format!("${len}\r\n"));
     }
     pub fn add_reply_str(&self, s: &str) {
-        self.add_reply(Arc::new(RedisObject::String { ptr: StringStorageType::String(s.to_string()) }));
+        self.add_reply(Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String(s.to_string()) })));
     }
     pub fn add_reply_u64(&self, n: u64) {
         self.add_reply_str(&format!(":{}\r\n", n.to_string()));
     }
 
-    pub fn lookup_key_read_or_reply(&self, key: &str, obj: Arc<RedisObject>) -> Option<Arc<RedisObject>> {
+    pub fn lookup_key_read_or_reply(&self, key: &str, obj: Arc<RwLock<RedisObject>>) -> Option<Arc<RwLock<RedisObject>>> {
         match self.lookup_key_read(key) {
             None => {
                 self.add_reply(obj);
@@ -433,7 +444,7 @@ impl RedisClient {
             Some(v) => { Some(v.clone()) },
         }
     }
-    pub fn lookup_key_write_or_reply(&self, key: &str, obj: Arc<RedisObject>) -> Option<Arc<RedisObject>> {
+    pub fn lookup_key_write_or_reply(&self, key: &str, obj: Arc<RwLock<RedisObject>>) -> Option<Arc<RwLock<RedisObject>>> {
         match self.lookup_key_write(key) {
             None => {
                 self.add_reply(obj);
@@ -442,15 +453,15 @@ impl RedisClient {
             Some(v) => { Some(v.clone()) },
         }
     }
-    pub fn lookup_key_read(&self, key: &str) -> Option<Arc<RedisObject>> {
+    pub fn lookup_key_read(&self, key: &str) -> Option<Arc<RwLock<RedisObject>>> {
         self.expire_if_needed(key);
         self.lookup_key(key)
     }
-    pub fn lookup_key_write(&self, key: &str) -> Option<Arc<RedisObject>> {
+    pub fn lookup_key_write(&self, key: &str) -> Option<Arc<RwLock<RedisObject>>> {
         self.delete_if_volatile(key);
         self.lookup_key(key)
     }
-    fn lookup_key(&self, key: &str) -> Option<Arc<RedisObject>> {
+    fn lookup_key(&self, key: &str) -> Option<Arc<RwLock<RedisObject>>> {
         let db = self.db.clone().expect("db doesn't exist");
         let db_r = db.read().unwrap();
         match db_r.dict.get(key) {
@@ -468,7 +479,7 @@ impl RedisClient {
         let db_r = db.read().unwrap();
         db_r.blocking_keys.get(key).map(|e| e.clone())
     }
-    pub fn insert(&self, key: &str, value: Arc<RedisObject>) {
+    pub fn insert(&self, key: &str, value: Arc<RwLock<RedisObject>>) {
         let db = self.db.clone().expect("db doesn't exist");
         let mut db_w = db.write().unwrap();
         db_w.dict.insert(key.to_string(), value);
@@ -581,7 +592,7 @@ impl RedisClient {
     pub fn fd(&self) -> i32 {
         self.fd
     }
-    pub fn set_argv(&mut self, argv: Vec<Arc<RedisObject>>) {
+    pub fn set_argv(&mut self, argv: Vec<Arc<RwLock<RedisObject>>>) {
         self.argv = argv;
     }
 }

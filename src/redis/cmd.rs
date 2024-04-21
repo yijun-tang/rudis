@@ -1,7 +1,7 @@
-use std::{borrow::Borrow, collections::{HashMap, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
+use std::{borrow::{Borrow, BorrowMut}, collections::{HashMap, HashSet, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
-use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, StringStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR}, server_write};
+use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR}, server_write};
 
 
 /// 
@@ -268,18 +268,15 @@ fn get_command(c: &mut RedisClient) {
     }
 }
 fn get_generic_command(c: &RedisClient) -> Result<(), String> {
-    match c.lookup_key_read_or_reply(c.argv[1].as_key(), NULL_BULK.clone()) {
+    match c.lookup_key_read_or_reply(c.argv[1].read().unwrap().as_key(), NULL_BULK.clone()) {
         None => Ok(()),
-        Some(v) => {
-            match v.deref() {
-                RedisObject::String { ptr: _ } => {
-                    c.add_reply_bulk(v);
-                    Ok(())
-                },
-                _ => {
-                    c.add_reply(WRONG_TYPE_ERR.clone());
-                    Err("WRONG TYPE ERROR".to_string())
-                },
+        Some(obj) => {
+            if obj.read().unwrap().is_string() {
+                c.add_reply_bulk(obj);
+                Ok(())
+            } else {
+                c.add_reply(WRONG_TYPE_ERR.clone());
+                Err("WRONG TYPE ERROR".to_string())
             }
         },
     }
@@ -290,10 +287,10 @@ fn set_command(c: &mut RedisClient) {
 }
 fn set_generic_command(c: &mut RedisClient, nx: bool) {
     if nx {
-        c.delete_if_volatile(c.argv[1].as_key());
+        c.delete_if_volatile(c.argv[1].read().unwrap().as_key());
     }
 
-    if c.contains(c.argv[1].as_key()) {
+    if c.contains(c.argv[1].read().unwrap().as_key()) {
         if nx {
             c.add_reply(C_ZERO.clone());
             return;
@@ -305,10 +302,10 @@ fn set_generic_command(c: &mut RedisClient, nx: bool) {
             // TODO: vm related   
         }
     }
-    c.insert(c.argv[1].as_key(), c.argv[2].clone());
+    c.insert(c.argv[1].read().unwrap().as_key(), c.argv[2].clone());
 
     server_write().dirty += 1;
-    c.remove_expire(c.argv[1].as_key());
+    c.remove_expire(c.argv[1].read().unwrap().as_key());
     match nx {
         true => { c.add_reply(C_ONE.clone()); }
         false => { c.add_reply(OK.clone()); }
@@ -324,24 +321,21 @@ fn getset_command(c: &mut RedisClient) {
         }
     }
 
-    c.insert(c.argv[1].as_key(), c.argv[2].clone());
+    c.insert(c.argv[1].read().unwrap().as_key(), c.argv[2].clone());
     server_write().dirty += 1;
-    c.remove_expire(c.argv[1].as_key());
+    c.remove_expire(c.argv[1].read().unwrap().as_key());
 }
 
 fn mget_command(c: &mut RedisClient) {
     c.add_reply_str(&format!("*{}\r\n", c.argv.len() - 1));
     for i in 1..c.argv.len() {
-        match c.lookup_key_read(c.argv[i].as_key()) {
+        match c.lookup_key_read(c.argv[i].read().unwrap().as_key()) {
             None => { c.add_reply(NULL_BULK.clone()); },
             Some(v) => {
-                match v.deref() {
-                    RedisObject::String { ptr: _ } => {
-                        c.add_reply_bulk(v);
-                    },
-                    _ => {
-                        c.add_reply(NULL_BULK.clone());
-                    },
+                if v.read().unwrap().is_string() {
+                    c.add_reply_bulk(v);
+                } else {
+                    c.add_reply(NULL_BULK.clone());
                 }
             },
         }
@@ -367,7 +361,7 @@ fn mset_generic_command(c: &mut RedisClient, nx: bool) {
     let mut busy_keys = 0;
     if nx {
         for i in (1..c.argv.len()).step_by(2) {
-            if c.lookup_key_write(c.argv[i].as_key()).is_some() {
+            if c.lookup_key_write(c.argv[i].read().unwrap().as_key()).is_some() {
                 busy_keys += 1;
             }
         }
@@ -379,8 +373,8 @@ fn mset_generic_command(c: &mut RedisClient, nx: bool) {
 
     for i in (1..c.argv.len()).step_by(2) {
         c.argv[i + 1] = try_object_encoding(c.argv[i + 1].clone());
-        c.insert(c.argv[i].as_key(), c.argv[i + 1].clone());
-        c.remove_expire(c.argv[i].as_key());
+        c.insert(c.argv[i].read().unwrap().as_key(), c.argv[i + 1].clone());
+        c.remove_expire(c.argv[i].read().unwrap().as_key());
     }
     server_write().dirty += (c.argv.len() as u128 - 1) / 2;
     match nx {
@@ -399,7 +393,7 @@ fn incr_command(c: &mut RedisClient) {
 
 fn incrby_command(c: &mut RedisClient) {
     let mut _i = 0i128;
-    match c.argv[2].as_key().parse() {
+    match c.argv[2].read().unwrap().as_key().parse() {
         Ok(v) => { _i = v; },
         Err(e) => {
             log(LogLevel::Warning, &e.to_string());
@@ -415,7 +409,7 @@ fn decr_command(c: &mut RedisClient) {
 
 fn decrby_command(c: &mut RedisClient) {
     let mut _i = 0i128;
-    match c.argv[2].as_key().parse() {
+    match c.argv[2].read().unwrap().as_key().parse() {
         Ok(v) => { _i = v; },
         Err(e) => {
             log(LogLevel::Warning, &e.to_string());
@@ -427,12 +421,12 @@ fn decrby_command(c: &mut RedisClient) {
 
 fn incr_decr_command(c: &mut RedisClient, incr: i128) {
     let mut value = 0i128;
-    match c.lookup_key_write(c.argv[1].as_key()) {
+    match c.lookup_key_write(c.argv[1].read().unwrap().as_key()) {
         None => {},
         Some(v) => {
-            match v.borrow() {
-                RedisObject::String { ptr } => {
-                    match ptr {
+            match v.read().unwrap().string() {
+                Some(str_storage) => {
+                    match str_storage {
                         StringStorageType::String(s) => {
                             match s.parse() {
                                 Ok(v) => { value = v; },
@@ -445,17 +439,17 @@ fn incr_decr_command(c: &mut RedisClient, incr: i128) {
                         StringStorageType::Integer(n) => { value = *n as i128; },
                     }
                 },
-                _ => {},
+                None => {},
             }
         },
     }
 
     value += incr;
     let obj = RedisObject::String { ptr: StringStorageType::String(value.to_string()) };
-    let encoded_obj = try_object_encoding(Arc::new(obj));
-    c.insert(c.argv[1].as_key(), encoded_obj.clone());
+    let encoded_obj = try_object_encoding(Arc::new(RwLock::new(obj)));
+    c.insert(c.argv[1].read().unwrap().as_key(), encoded_obj.clone());
 
-    c.remove_expire(c.argv[1].as_key());
+    c.remove_expire(c.argv[1].read().unwrap().as_key());
     server_write().dirty += 1;
     c.add_reply(COLON.clone());
     c.add_reply(encoded_obj);
@@ -481,42 +475,42 @@ fn lpush_command(c: &mut RedisClient) {
 
 fn push_generic_command(c: &mut RedisClient, place: ListWhere) {
     let mut len = 0usize;
-    match c.lookup_key_write(c.argv[1].as_key()) {
+    match c.lookup_key_write(c.argv[1].read().unwrap().as_key()) {
         None => {
-            match handle_clients_waiting_list_push(c, c.argv[1].as_key(), c.argv[2].clone()) {
+            match handle_clients_waiting_list_push(c, c.argv[1].read().unwrap().as_key(), c.argv[2].clone()) {
                 ListWaiting::Waiting => {
                     c.add_reply(C_ONE.clone());
                     return;
                 },
                 ListWaiting::NoWait => {
-                    let l = ListStorageType::LinkedList(Arc::new(RwLock::new(LinkedList::new())));
+                    let mut l = ListStorageType::LinkedList(LinkedList::new());
                     match place {
                         ListWhere::Head => { l.push_front(c.argv[2].clone()); },
                         ListWhere::Tail => { l.push_back(c.argv[2].clone()); },
                     }
                     len = l.len();
-                    c.insert(c.argv[1].as_key(), Arc::new(RedisObject::List { l }));
+                    c.insert(c.argv[1].read().unwrap().as_key(), Arc::new(RwLock::new(RedisObject::List { l })));
                 },
             }
         },
         Some(lobj) => {
-            match lobj.borrow() {
-                RedisObject::List { l } => {
-                    match handle_clients_waiting_list_push(c, c.argv[1].as_key(), c.argv[2].clone()) {
+            match lobj.write().unwrap().list_mut() {
+                Some(l_storage) => {
+                    match handle_clients_waiting_list_push(c, c.argv[1].read().unwrap().as_key(), c.argv[2].clone()) {
                         ListWaiting::Waiting => {
                             c.add_reply(C_ONE.clone());
                             return;
                         },
                         ListWaiting::NoWait => {
                             match place {
-                                ListWhere::Head => { l.push_front(c.argv[2].clone()); },
-                                ListWhere::Tail => { l.push_back(c.argv[2].clone()); },
+                                ListWhere::Head => { l_storage.push_front(c.argv[2].clone()); },
+                                ListWhere::Tail => { l_storage.push_back(c.argv[2].clone()); },
                             }
-                            len = l.len();
+                            len = l_storage.len();
                         },
                     }
                 },
-                _ => {
+                None => {
                     c.add_reply(WRONG_TYPE_ERR.clone());
                     return;
                 },
@@ -542,7 +536,7 @@ enum ListWaiting {
 /// If the function returns `Waiting` there was a client waiting for a list push
 /// against this key, the element was passed to this client thus it's not
 /// needed to actually add it to the list and the caller should return asap.
-fn handle_clients_waiting_list_push(c: &RedisClient, key: &str, value: Arc<RedisObject>) -> ListWaiting {
+fn handle_clients_waiting_list_push(c: &RedisClient, key: &str, value: Arc<RwLock<RedisObject>>) -> ListWaiting {
     match c.lookup_blocking_key(key) {
         None => { ListWaiting::NoWait },
         Some(l) => {
@@ -557,11 +551,11 @@ fn handle_clients_waiting_list_push(c: &RedisClient, key: &str, value: Arc<Redis
 }
 
 fn llen_command(c: &mut RedisClient) {
-    match c.lookup_key_read_or_reply(c.argv[1].as_key(), C_ZERO.clone()) {
+    match c.lookup_key_read_or_reply(c.argv[1].read().unwrap().as_key(), C_ZERO.clone()) {
         Some(v) => {
-            match v.borrow() {
-                RedisObject::List { l } => { c.add_reply_u64(l.len() as u64); },
-                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            match v.read().unwrap().list() {
+                Some(l_storage) => { c.add_reply_u64(l_storage.len() as u64); },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
             }
         },
         None => {},
@@ -571,22 +565,22 @@ fn llen_command(c: &mut RedisClient) {
 fn lrange_command(c: &mut RedisClient) {
     let mut start = 0;
     let mut end = 0;
-    match (c.argv[2].as_key().parse(), c.argv[3].as_key().parse()) {
+    match (c.argv[2].read().unwrap().as_key().parse(), c.argv[3].read().unwrap().as_key().parse()) {
         (Ok(s), Ok(e)) => {
             start = s;
             end = e;
         },
         _ => {
-            log(LogLevel::Warning, &format!("failed to parse args: '{}', '{}'", c.argv[2].as_key(), c.argv[3].as_key()));
+            log(LogLevel::Warning, &format!("failed to parse args: '{}', '{}'", c.argv[2].read().unwrap().as_key(), c.argv[3].read().unwrap().as_key()));
             return;
         }
     }
 
-    match c.lookup_key_read_or_reply(c.argv[1].as_key(), NULL_MULTI_BULK.clone()) {
+    match c.lookup_key_read_or_reply(c.argv[1].read().unwrap().as_key(), NULL_MULTI_BULK.clone()) {
         Some(v) => {
-            match v.borrow() {
-                RedisObject::List { l } => {
-                    let len = l.len();
+            match v.read().unwrap().list() {
+                Some(l_storage) => {
+                    let len = l_storage.len();
                     // convert negative indexes
                     if start < 0 { start += len as i32; }
                     if end < 0 { end += len as i32; }
@@ -606,12 +600,12 @@ fn lrange_command(c: &mut RedisClient) {
 
                     // Return the result in form of a multi-bulk reply
                     c.add_reply_str(&format!("*{}\r\n", range_len));
-                    let items = l.range(start, end);
+                    let items = l_storage.range(start, end);
                     for e in items {
-                        c.add_reply_bulk(e);
+                        c.add_reply_bulk(Arc::new(RwLock::new(e)));
                     }
                 },
-                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
             }
         },
         None => {},
@@ -621,22 +615,22 @@ fn lrange_command(c: &mut RedisClient) {
 fn ltrim_command(c: &mut RedisClient) {
     let mut start = 0;
     let mut end = 0;
-    match (c.argv[2].as_key().parse(), c.argv[3].as_key().parse()) {
+    match (c.argv[2].read().unwrap().as_key().parse(), c.argv[3].read().unwrap().as_key().parse()) {
         (Ok(s), Ok(e)) => {
             start = s;
             end = e;
         },
         _ => {
-            log(LogLevel::Warning, &format!("failed to parse args: '{}', '{}'", c.argv[2].as_key(), c.argv[3].as_key()));
+            log(LogLevel::Warning, &format!("failed to parse args: '{}', '{}'", c.argv[2].read().unwrap().as_key(), c.argv[3].read().unwrap().as_key()));
             return;
         }
     }
 
-    match c.lookup_key_write_or_reply(c.argv[1].as_key(), OK.clone()) {
+    match c.lookup_key_write_or_reply(c.argv[1].read().unwrap().as_key(), OK.clone()) {
         Some(v) => {
-            match v.borrow() {
-                RedisObject::List { l } => {
-                    let len = l.len();
+            match v.write().unwrap().list_mut() {
+                Some(l_storage) => {
+                    let len = l_storage.len();
                     let mut ltrim = 0usize;
                     let mut rtrim = 0usize;
                     // convert negative indexes
@@ -656,11 +650,11 @@ fn ltrim_command(c: &mut RedisClient) {
                     }
 
                     // Remove list elements to perform the trim
-                    l.retain_range(ltrim as i32, rtrim as i32);
+                    l_storage.retain_range(ltrim as i32, rtrim as i32);
                     server_write().dirty += 1;
                     c.add_reply(OK.clone());
                 },
-                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
             }
         },
         None => {},
@@ -669,27 +663,27 @@ fn ltrim_command(c: &mut RedisClient) {
 
 fn lindex_command(c: &mut RedisClient) {
     let mut index = 0;
-    match c.argv[2].as_key().parse() {
+    match c.argv[2].read().unwrap().as_key().parse() {
         Ok(i) => { index = i; },
         _ => {
-            log(LogLevel::Warning, &format!("failed to parse args: '{}'", c.argv[2].as_key()));
+            log(LogLevel::Warning, &format!("failed to parse args: '{}'", c.argv[2].read().unwrap().as_key()));
             return;
         }
     }
 
-    match c.lookup_key_read_or_reply(c.argv[1].as_key(), NULL_BULK.clone()) {
+    match c.lookup_key_read_or_reply(c.argv[1].read().unwrap().as_key(), NULL_BULK.clone()) {
         Some(v) => {
-            match v.borrow() {
-                RedisObject::List { l } => {
+            match v.read().unwrap().list() {
+                Some(l_storage) => {
                     if index < 0 {
-                        index += l.len() as i32;
+                        index += l_storage.len() as i32;
                     }
-                    match l.index(index) {
-                        Some(e) => { c.add_reply_bulk(e); },
+                    match l_storage.index(index) {
+                        Some(e) => { c.add_reply_bulk(Arc::new(RwLock::new(e))); },
                         None => { c.add_reply(NULL_BULK.clone()); },
                     }
                 },
-                _ => {c.add_reply(WRONG_TYPE_ERR.clone()); },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
             }
         },
         None => {},
@@ -698,23 +692,23 @@ fn lindex_command(c: &mut RedisClient) {
 
 fn lset_command(c: &mut RedisClient) {
     let mut index = 0;
-    match c.argv[2].as_key().parse() {
+    match c.argv[2].read().unwrap().as_key().parse() {
         Ok(i) => { index = i; },
         _ => {
-            log(LogLevel::Warning, &format!("failed to parse args: '{}'", c.argv[2].as_key()));
+            log(LogLevel::Warning, &format!("failed to parse args: '{}'", c.argv[2].read().unwrap().as_key()));
             return;
         }
     }
 
-    match c.lookup_key_write_or_reply(c.argv[1].as_key(), NO_KEY_ERR.clone()) {
+    match c.lookup_key_write_or_reply(c.argv[1].read().unwrap().as_key(), NO_KEY_ERR.clone()) {
         Some(v) => {
-            match v.borrow() {
-                RedisObject::List { l } => {
+            match v.write().unwrap().list_mut() {
+                Some(l_storage) => {
                     // TODO: range checking more strictly
                     if index < 0 {
-                        index += l.len() as i32;
+                        index += l_storage.len() as i32;
                     }
-                    match l.set(index, c.argv[3].clone()) {
+                    match l_storage.set(index, c.argv[3].clone()) {
                         true => {
                             server_write().dirty += 1;
                             c.add_reply(OK.clone());
@@ -722,7 +716,7 @@ fn lset_command(c: &mut RedisClient) {
                         false => { c.add_reply(OUT_OF_RANGE_ERR.clone()); },
                     }
                 },
-                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
             }
         },
         None => {},
@@ -731,30 +725,30 @@ fn lset_command(c: &mut RedisClient) {
 
 fn lrem_command(c: &mut RedisClient) {
     let mut to_remove = 0;
-    match c.argv[2].as_key().parse() {
+    match c.argv[2].read().unwrap().as_key().parse() {
         Ok(i) => { to_remove = i; },
         _ => {
-            log(LogLevel::Warning, &format!("failed to parse args: '{}'", c.argv[2].as_key()));
+            log(LogLevel::Warning, &format!("failed to parse args: '{}'", c.argv[2].read().unwrap().as_key()));
             return;
         }
     }
 
-    match c.lookup_key_write_or_reply(c.argv[1].as_key(), C_ZERO.clone()) {
+    match c.lookup_key_write_or_reply(c.argv[1].read().unwrap().as_key(), C_ZERO.clone()) {
         Some(v) => {
-            match v.borrow() {
-                RedisObject::List { l } => {
+            match v.write().unwrap().list_mut() {
+                Some(l_storage) => {
                     let mut from_tail = false;
                     if to_remove < 0 {
                         to_remove = -to_remove;
                         from_tail = true;
                     }
                     let removed = match from_tail {
-                        false => { l.remove_head(to_remove, c.argv[3].clone()) },
-                        true => { l.remove_tail(to_remove, c.argv[3].clone()) },
+                        false => { l_storage.remove_head(to_remove, c.argv[3].clone()) },
+                        true => { l_storage.remove_tail(to_remove, c.argv[3].clone()) },
                     };
                     c.add_reply_str(&format!(":{}\r\n", removed));
                 },
-                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
             }
         },
         None => {},
@@ -770,23 +764,23 @@ fn rpop_command(c: &mut RedisClient) {
 }
 
 fn pop_generic_command(c: &mut RedisClient, place: ListWhere) {
-    match c.lookup_key_write_or_reply(c.argv[1].as_key(), NULL_BULK.clone()) {
+    match c.lookup_key_write_or_reply(c.argv[1].read().unwrap().as_key(), NULL_BULK.clone()) {
         Some(v) => {
-            match v.borrow() {
-                RedisObject::List { l } => {
+            match v.write().unwrap().list_mut() {
+                Some(l_storage) => {
                     let ele = match place {
-                        ListWhere::Head => { l.pop_front() },
-                        ListWhere::Tail => { l.pop_back() },
+                        ListWhere::Head => { l_storage.pop_front() },
+                        ListWhere::Tail => { l_storage.pop_back() },
                     };
                     match ele {
                         Some(v) => {
-                            c.add_reply_bulk(v);
+                            c.add_reply_bulk(Arc::new(RwLock::new(v)));
                             server_write().dirty += 1;
                         },
                         None => { c.add_reply(NULL_BULK.clone()); },
                     }
                 },
-                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
             }
         },
         None => {},
@@ -808,24 +802,21 @@ fn pop_generic_command(c: &mut RedisClient, place: ListWhere) {
 /// since the element is not just returned but pushed against another list
 /// as well. This command was originally proposed by Ezra Zygmuntowicz.
 fn rpoplpush_command(c: &mut RedisClient) {
-    match c.lookup_key_write_or_reply(c.argv[1].as_key(), NULL_BULK.clone()) {
+    match c.lookup_key_write_or_reply(c.argv[1].read().unwrap().as_key(), NULL_BULK.clone()) {
         Some(v) => {
-            match v.borrow() {
-                RedisObject::List { l } => {
-                    match l.pop_back() {
+            match v.write().unwrap().list_mut() {
+                Some(l_storage) => {
+                    match l_storage.pop_back() {
                         Some(ele) => {
                             // element type of destination list isn't correct
-                            let mut obj: Option<Arc<RedisObject>> = None;
-                            match c.lookup_key_write(c.argv[2].as_key()) {
+                            let mut obj: Option<Arc<RwLock<RedisObject>>> = None;
+                            match c.lookup_key_write(c.argv[2].read().unwrap().as_key()) {
                                 Some(d_obj) => {
-                                    match d_obj.borrow() {
-                                        RedisObject::List { l: _ } => {
-                                            obj = Some(d_obj.clone());
-                                        },
-                                        _ => {
-                                            c.add_reply(WRONG_TYPE_ERR.clone());
-                                            return;
-                                        },
+                                    if d_obj.read().unwrap().is_list() {
+                                        obj = Some(d_obj.clone());
+                                    } else {
+                                        c.add_reply(WRONG_TYPE_ERR.clone());
+                                        return;
                                     }
                                 },
                                 None => {},
@@ -833,21 +824,21 @@ fn rpoplpush_command(c: &mut RedisClient) {
 
                             // Add the element to the target list (unless it's directly
                             // passed to some BLPOP-ing client
-                            match handle_clients_waiting_list_push(c, c.argv[2].as_key(), ele.clone()) {
+                            match handle_clients_waiting_list_push(c, c.argv[2].read().unwrap().as_key(), Arc::new(RwLock::new(ele.clone()))) {
                                 ListWaiting::NoWait => {
                                     match obj {
                                         None => {
                                             // Create the list if the key does not exist
-                                            let new_l = ListStorageType::LinkedList(Arc::new(RwLock::new(LinkedList::new())));
-                                            new_l.push_front(ele.clone());
-                                            c.insert(c.argv[2].as_key(), Arc::new(RedisObject::List { l: new_l }));
+                                            let mut new_l = ListStorageType::LinkedList(LinkedList::new());
+                                            new_l.push_front(Arc::new(RwLock::new(ele.clone())));
+                                            c.insert(c.argv[2].read().unwrap().as_key(), Arc::new(RwLock::new(RedisObject::List { l: new_l })));
                                         },
                                         Some(v) => {
-                                            match v.borrow() {
-                                                RedisObject::List { l } => {
-                                                    l.push_front(ele.clone());
+                                            match v.write().unwrap().list_mut() {
+                                                Some(l_storage) => {
+                                                    l_storage.push_front(Arc::new(RwLock::new(ele.clone())));
                                                 },
-                                                _ => { /* impossible */ },
+                                                None => { /* impossible */ },
                                             }
                                         },
                                     }
@@ -857,12 +848,12 @@ fn rpoplpush_command(c: &mut RedisClient) {
 
                             // Send the element to the client as reply as well
                             server_write().dirty += 1;
-                            c.add_reply_bulk(ele.clone());
+                            c.add_reply_bulk(Arc::new(RwLock::new(ele.clone())));
                         },
                         None => { c.add_reply(NULL_BULK.clone()); },
                     }
                 },
-                _ => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
             }
         },
         None => {},
@@ -874,7 +865,14 @@ fn rpoplpush_command(c: &mut RedisClient) {
 // 
 
 fn sadd_command(c: &mut RedisClient) {
-    
+    match c.lookup_key_write(c.argv[1].read().unwrap().as_key()) {
+        Some(set) => {
+            
+        },
+        None => {
+            
+        },
+    }
 }
 
 fn srem_command(c: &mut RedisClient) {

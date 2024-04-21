@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::LinkedList, sync::{Arc, RwLock}};
+use std::{borrow::Borrow, collections::{HashSet, LinkedList}, hash::Hash, ops::Deref, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 
 
@@ -9,97 +9,97 @@ use once_cell::sync::Lazy;
 
 /// Our shared "common" objects
 /// 
-pub static CRLF: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("\r\n".to_string()) })
+pub static CRLF: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("\r\n".to_string()) }))
 });
-pub static OK: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("+OK\r\n".to_string()) })
+pub static OK: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("+OK\r\n".to_string()) }))
 });
-pub static ERR: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("-ERR\r\n".to_string()) })
+pub static ERR: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("-ERR\r\n".to_string()) }))
 });
-pub static EMPTY_BULK: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("$0\r\n\r\n".to_string()) })
+pub static EMPTY_BULK: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("$0\r\n\r\n".to_string()) }))
 });
-pub static C_ZERO: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String(":0\r\n".to_string()) })
+pub static C_ZERO: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String(":0\r\n".to_string()) }))
 });
-pub static C_ONE: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String(":1\r\n".to_string()) })
+pub static C_ONE: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String(":1\r\n".to_string()) }))
 });
-pub static NULL_BULK: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("$-1\r\n".to_string()) })
+pub static NULL_BULK: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("$-1\r\n".to_string()) }))
 });
-pub static NULL_MULTI_BULK: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("*-1\r\n".to_string()) })
+pub static NULL_MULTI_BULK: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("*-1\r\n".to_string()) }))
 });
-pub static EMPTY_MULTI_BULK: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("*0\r\n".to_string()) })
+pub static EMPTY_MULTI_BULK: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("*0\r\n".to_string()) }))
 });
-pub static PONG: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("+PONG\r\n".to_string()) })
+pub static PONG: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("+PONG\r\n".to_string()) }))
 });
-pub static QUEUED: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("+QUEUED\r\n".to_string()) })
+pub static QUEUED: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("+QUEUED\r\n".to_string()) }))
 });
-pub static WRONG_TYPE_ERR: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("-ERR Operation against a key holding the wrong kind of value\r\n".to_string()) })
+pub static WRONG_TYPE_ERR: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("-ERR Operation against a key holding the wrong kind of value\r\n".to_string()) }))
 });
-pub static NO_KEY_ERR: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("-ERR no such key\r\n".to_string()) })
+pub static NO_KEY_ERR: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("-ERR no such key\r\n".to_string()) }))
 });
-pub static SYNTAX_ERR: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("-ERR syntax error\r\n".to_string()) })
+pub static SYNTAX_ERR: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("-ERR syntax error\r\n".to_string()) }))
 });
-pub static SAME_OBJECT_ERR: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("-ERR source and destination objects are the same\r\n".to_string()) })
+pub static SAME_OBJECT_ERR: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("-ERR source and destination objects are the same\r\n".to_string()) }))
 });
-pub static OUT_OF_RANGE_ERR: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("-ERR index out of range\r\n".to_string()) })
+pub static OUT_OF_RANGE_ERR: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("-ERR index out of range\r\n".to_string()) }))
 });
-pub static SPACE: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String(" ".to_string()) })
+pub static SPACE: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String(" ".to_string()) }))
 });
-pub static COLON: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String(":".to_string()) })
+pub static COLON: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String(":".to_string()) }))
 });
-pub static PLUS: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("+".to_string()) })
+pub static PLUS: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("+".to_string()) }))
 });
-pub static SELECT0: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("select 0\r\n".to_string()) })
+pub static SELECT0: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("select 0\r\n".to_string()) }))
 });
-pub static SELECT1: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("select 1\r\n".to_string()) })
+pub static SELECT1: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("select 1\r\n".to_string()) }))
 });
-pub static SELECT2: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("select 2\r\n".to_string()) })
+pub static SELECT2: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("select 2\r\n".to_string()) }))
 });
-pub static SELECT3: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("select 3\r\n".to_string()) })
+pub static SELECT3: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("select 3\r\n".to_string()) }))
 });
-pub static SELECT4: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("select 4\r\n".to_string()) })
+pub static SELECT4: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("select 4\r\n".to_string()) }))
 });
-pub static SELECT5: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("select 5\r\n".to_string()) })
+pub static SELECT5: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("select 5\r\n".to_string()) }))
 });
-pub static SELECT6: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("select 6\r\n".to_string()) })
+pub static SELECT6: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("select 6\r\n".to_string()) }))
 });
-pub static SELECT7: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("select 7\r\n".to_string()) })
+pub static SELECT7: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("select 7\r\n".to_string()) }))
 });
-pub static SELECT8: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("select 8\r\n".to_string()) })
+pub static SELECT8: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("select 8\r\n".to_string()) }))
 });
-pub static SELECT9: Lazy<Arc<RedisObject>> = Lazy::new(|| {
-    Arc::new(RedisObject::String { ptr: StringStorageType::String("select 9\r\n".to_string()) })
+pub static SELECT9: Lazy<Arc<RwLock<RedisObject>>> = Lazy::new(|| {
+    Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("select 9\r\n".to_string()) }))
 });
 
 
 /// Object types
-#[derive(Clone)]
+#[derive(Clone, Eq)]
 pub enum RedisObject {
     String {
         ptr: StringStorageType,
@@ -107,11 +107,20 @@ pub enum RedisObject {
     List {
         l: ListStorageType,
     },
-    Set,
+    Set {
+        s: SetStorageType,
+    },
     ZSet,
     Hash,
 }
 impl RedisObject {
+    pub fn is_string(&self) -> bool {
+        match self {
+            Self::String { ptr: _ } => true,
+            _ => false,
+        }
+    }
+
     pub fn as_key(&self) -> &str {
         self.string().unwrap().string().unwrap()
     }
@@ -119,6 +128,27 @@ impl RedisObject {
     pub fn string(&self) -> Option<&StringStorageType> {
         match self {
             Self::String {ptr} => { Some(ptr) },
+            _ => { None },
+        }
+    }
+
+    pub fn is_list(&self) -> bool {
+        match self {
+            Self::List { l: _ } => true,
+            _ => false,
+        }
+    }
+
+    pub fn list(&self) -> Option<&ListStorageType> {
+        match self {
+            Self::List { l } => { Some(l) },
+            _ => { None },
+        }
+    }
+
+    pub fn list_mut(&mut self) -> Option<&mut ListStorageType> {
+        match self {
+            Self::List { l } => { Some(l) },
             _ => { None },
         }
     }
@@ -139,8 +169,29 @@ impl RedisObject {
         }
     }
 }
+impl PartialEq for RedisObject {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::String { ptr: l_ptr }, Self::String { ptr: r_ptr }) => l_ptr == r_ptr,
+            _ => false,
+        }
+    }
+}
+impl Hash for RedisObject {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Self::String { ptr } => {
+                match ptr {
+                    StringStorageType::String(s) => { s.hash(state) },
+                    _ => { assert!(false, "impossible code"); }
+                }
+            },
+            _ => { assert!(false, "impossible code"); },
+        }
+    }
+}
 
-#[derive(Clone)]
+#[derive(Clone, Eq)]
 pub enum StringStorageType {
     String(String),     // raw string
     Integer(isize),     // encoded as integer
@@ -153,170 +204,191 @@ impl StringStorageType {
         }
     }
 }
-#[derive(Clone)]
+impl PartialEq for StringStorageType {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::String(l0), Self::String(r0)) => l0 == r0,
+            (Self::Integer(l0), Self::Integer(r0)) => l0 == r0,
+            (Self::String(l0), Self::Integer(r0)) => l0.eq(&r0.to_string()),
+            (Self::Integer(l0), Self::String(r0)) => r0.eq(&l0.to_string()),
+        }
+    }
+}
+#[derive(Clone, Eq)]
 pub enum ListStorageType {
-    LinkedList(Arc<RwLock<LinkedList<Arc<RedisObject>>>>),
+    LinkedList(LinkedList<RedisObject>),
 }
 impl ListStorageType {
-    pub fn push_front(&self, obj: Arc<RedisObject>) {
+    pub fn push_front(&mut self, obj: Arc<RwLock<RedisObject>>) {
         match self {
             Self::LinkedList(l) => {
-                l.write().unwrap().push_front(obj);
+                l.push_front(obj.read().unwrap().clone());
             },
         }
     }
-    pub fn push_back(&self, obj: Arc<RedisObject>) {
+    pub fn push_back(&mut self, obj: Arc<RwLock<RedisObject>>) {
         match self {
             Self::LinkedList(l) => {
-                l.write().unwrap().push_back(obj);
+                l.push_back(obj.read().unwrap().clone());
             },
         }
     }
-    pub fn pop_front(&self) -> Option<Arc<RedisObject>> {
+    pub fn pop_front(&mut self) -> Option<RedisObject> {
         match self {
             Self::LinkedList(l) => {
-                l.write().unwrap().pop_front()
+                l.pop_front()
             },
         }
     }
-    pub fn pop_back(&self) -> Option<Arc<RedisObject>> {
+    pub fn pop_back(&mut self) -> Option<RedisObject> {
         match self {
             Self::LinkedList(l) => {
-                l.write().unwrap().pop_back()
+                l.pop_back()
             },
         }
     }
     pub fn len(&self) -> usize {
         match self {
             Self::LinkedList(l) => {
-                l.read().unwrap().len()
+                l.len()
             },
         }
     }
     // TODO: lazy loading
-    pub fn range(&self, start: i32, end: i32) -> Vec<Arc<RedisObject>> {
+    pub fn range(&self, start: i32, end: i32) -> Vec<RedisObject> {
         match self {
             Self::LinkedList(l) => {
                 let mut skip = 0usize;
                 if start > 0 { skip = (start - 1) as usize; }
                 let size = (end - start + 1) as usize;
-                let v: Vec<Arc<RedisObject>> = l.read().unwrap().iter()
+                let v: Vec<RedisObject> = l.iter().cloned()
                                                 .skip(skip)
                                                 .take(size)
-                                                .map(|e| e.clone()).collect();
+                                                .collect();
                 v
             },
         }
     }
-    pub fn retain_range(&self, start: i32, end: i32) {
+    pub fn retain_range(&mut self, start: i32, end: i32) {
         match self {
             Self::LinkedList(l) => {
-                let len = self.len() - ((start + end) as usize);
+                let len = l.len() - ((start + end) as usize);
                 let skip = start as usize;
-                let mut v: LinkedList<Arc<RedisObject>> = l.read().unwrap().iter()
+                let mut v: LinkedList<RedisObject> = l.iter().cloned()
                                                 .skip(skip)
                                                 .take(len)
-                                                .map(|e| e.clone()).collect();
-                let mut l_w = l.write().unwrap();
-                l_w.clear();
-                l_w.append(&mut v);
+                                                .collect();
+                l.clear();
+                l.append(&mut v);
             },
         }
     }
-    pub fn index(&self, index: i32) -> Option<Arc<RedisObject>> {
+    pub fn index(&self, index: i32) -> Option<RedisObject> {
         match self {
             Self::LinkedList(l) => {
-                l.read().unwrap().iter().nth(index as usize).map(|e| e.clone())
+                l.iter().cloned().nth(index as usize)
             },
         }
     }
-    pub fn set(&self, index: i32, obj: Arc<RedisObject>) -> bool {
+    pub fn set(&mut self, index: i32, obj: Arc<RwLock<RedisObject>>) -> bool {
         if 0 <= index && index < self.len() as i32 {
-            let mut new_l: LinkedList<Arc<RedisObject>> = LinkedList::new();
+            let mut new_l: LinkedList<RedisObject> = LinkedList::new();
             match self {
                 Self::LinkedList(l) => {
-                    let mut first_part: LinkedList<Arc<RedisObject>> = l.read().unwrap().iter()
+                    let mut first_part: LinkedList<RedisObject> = l.iter().cloned()
                                                                         .take(index as usize)
-                                                                        .map(|e| e.clone())
                                                                         .collect();
                     new_l.append(&mut first_part);
-                    new_l.push_back(obj);
-                    let mut second_part: LinkedList<Arc<RedisObject>> = l.read().unwrap().iter()
+                    new_l.push_back(obj.read().unwrap().clone());
+                    let mut second_part: LinkedList<RedisObject> = l.iter().cloned()
                                                                         .skip(index as usize + 1)
-                                                                        .map(|e| e.clone())
                                                                         .collect();
                     new_l.append(&mut second_part);
-                    let mut l_w = l.write().unwrap();
-                    l_w.clear();
-                    l_w.append(&mut new_l);
+                    l.clear();
+                    l.append(&mut new_l);
                 },
             }
             return true;
         }
         false
     }
-    pub fn remove_head(&self, n: i32, obj: Arc<RedisObject>) -> i32 {
-        let mut remaining: LinkedList<Arc<RedisObject>> = LinkedList::new();
+    pub fn remove_head(&mut self, n: i32, obj: Arc<RwLock<RedisObject>>) -> i32 {
+        let mut remaining: LinkedList<RedisObject> = LinkedList::new();
         let mut removed = 0;
         match self {
             Self::LinkedList(l) => {
-                {
-                    let l_r = l.read().unwrap();
-                    let mut iter = l_r.iter();
-                    while let Some(e) = iter.next() {
-                        if compare_string_objects(e, &obj) {
-                            removed += 1;
-                            if n > 0 && removed == n { break; }
-                        } else {
-                            remaining.push_back(e.clone());
-                        }
-                    }
-                    while let Some(e) = iter.next() {
+                let mut iter = l.iter();
+                while let Some(e) = iter.next() {
+                    if compare_string_objects(e, &obj) {
+                        removed += 1;
+                        if n > 0 && removed == n { break; }
+                    } else {
                         remaining.push_back(e.clone());
                     }
                 }
-                let mut l_w = l.write().unwrap();
-                l_w.clear();
-                l_w.append(&mut remaining);
+                while let Some(e) = iter.next() {
+                    remaining.push_back(e.clone());
+                }
+                l.clear();
+                l.append(&mut remaining);
                 removed
             },
         }
     }
-    pub fn remove_tail(&self, n: i32, obj: Arc<RedisObject>) -> i32 {
-        let mut remaining: LinkedList<Arc<RedisObject>> = LinkedList::new();
+    pub fn remove_tail(&mut self, n: i32, obj: Arc<RwLock<RedisObject>>) -> i32 {
+        let mut remaining: LinkedList<RedisObject> = LinkedList::new();
         let mut removed = 0;
         match self {
             Self::LinkedList(l) => {
-                {
-                    let l_r = l.read().unwrap();
-                    let mut iter = l_r.iter().rev();
-                    while let Some(e) = iter.next() {
-                        if compare_string_objects(e, &obj) {
-                            removed += 1;
-                            if n > 0 && removed == n { break; }
-                        } else {
-                            remaining.push_front(e.clone());
-                        }
-                    }
-                    while let Some(e) = iter.next() {
+                let mut iter = l.iter().rev();
+                while let Some(e) = iter.next() {
+                    if compare_string_objects(e, &obj) {
+                        removed += 1;
+                        if n > 0 && removed == n { break; }
+                    } else {
                         remaining.push_front(e.clone());
                     }
                 }
-                let mut l_w = l.write().unwrap();
-                l_w.clear();
-                l_w.append(&mut remaining);
+                while let Some(e) = iter.next() {
+                    remaining.push_front(e.clone());
+                }
+                l.clear();
+                l.append(&mut remaining);
                 removed
             },
         }
     }
 }
+impl PartialEq for ListStorageType {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+#[derive(Clone, Eq)]
+pub enum SetStorageType {
+    HashSet(HashSet<RedisObject>)
+}
+impl SetStorageType {
+    pub fn insert(&self) {
+        match self {
+            Self::HashSet(s) => {
+                // s.insert();
+            },
+        }
+    }
+}
+impl PartialEq for SetStorageType {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
 
-pub fn try_object_sharing(obj: Arc<RedisObject>) {
+pub fn try_object_sharing(obj: Arc<RwLock<RedisObject>>) {
     todo!()
 }
 
 /// Try to encode a string object in order to save space
-pub fn try_object_encoding(obj: Arc<RedisObject>) -> Arc<RedisObject> {
+pub fn try_object_encoding(obj: Arc<RwLock<RedisObject>>) -> Arc<RwLock<RedisObject>> {
     // It's not save to encode shared objects: shared objects can be shared
     // everywhere in the "object space" of Redis. Encoded objects can only
     // appear as "values" (and not, for instance, as keys)
@@ -327,13 +399,13 @@ pub fn try_object_encoding(obj: Arc<RedisObject>) -> Arc<RedisObject> {
     // Currently we try to encode only strings
     // TODO: redis assert
 
-    match obj.borrow() {
-        RedisObject::String { ptr } => {
-            match ptr {
+    match obj.read().unwrap().string() {
+        Some(str_storage) => {
+            match str_storage {
                 StringStorageType::String(s) => {
                     match is_string_representable_as_int(s) {
                         Ok(encoded) => { 
-                            return Arc::new(RedisObject::String { ptr: StringStorageType::Integer(encoded) });
+                            return Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::Integer(encoded) }));
                         },
                         Err(_) => {},
                     }
@@ -341,7 +413,7 @@ pub fn try_object_encoding(obj: Arc<RedisObject>) -> Arc<RedisObject> {
                 StringStorageType::Integer(_) => {},
             }
         },
-        _ => {},
+        None => {},
     }
     obj
 }
@@ -377,18 +449,15 @@ fn is_string_representable_as_int(s: &str) -> Result<isize, String> {
 /// binary safe.
 /// 
 /// NOTE: USING get_decoded() FOR SIMPLICITY
-fn compare_string_objects(obj1: &Arc<RedisObject>, obj2: &Arc<RedisObject>) -> bool {
-    match obj1.borrow() {
+fn compare_string_objects(obj1: &RedisObject, obj2: &Arc<RwLock<RedisObject>>) -> bool {
+    match obj1 {
         RedisObject::String { ptr: _ } => {},
         _ => { return false; }
     }
-    match obj2.borrow() {
-        RedisObject::String { ptr: _ } => {},
-        _ => { return false; }
-    }
-    if Arc::ptr_eq(obj1, obj2) {
-        return true;
+    match obj2.read().unwrap().string() {
+        Some(_) => {},
+        None => { return false; }
     }
     obj1.get_decoded().string().unwrap().string().unwrap()
-        .eq(obj2.get_decoded().string().unwrap().string().unwrap())
+        .eq(obj2.read().unwrap().get_decoded().string().unwrap().string().unwrap())
 }
