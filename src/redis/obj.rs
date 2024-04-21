@@ -153,6 +153,27 @@ impl RedisObject {
         }
     }
 
+    pub fn is_set(&self) -> bool {
+        match self {
+            Self::Set { s: _ } => true,
+            _ => false,
+        }
+    }
+
+    pub fn set_mut(&mut self) -> Option<&mut SetStorageType> {
+        match self {
+            Self::Set { s } => { Some(s) },
+            _ => { None },
+        }
+    }
+
+    pub fn set(&self) -> Option<&SetStorageType> {
+        match self {
+            Self::Set { s } => { Some(s) },
+            _ => { None },
+        }
+    }
+
     /// Get a decoded version of an encoded object (returned as a new object).
     /// If the object is already raw-encoded just increment the ref count.
     pub fn get_decoded(&self) -> RedisObject {
@@ -369,10 +390,43 @@ pub enum SetStorageType {
     HashSet(HashSet<RedisObject>)
 }
 impl SetStorageType {
-    pub fn insert(&self) {
+    pub fn insert(&mut self, obj: Arc<RwLock<RedisObject>>) -> bool {
         match self {
             Self::HashSet(s) => {
-                // s.insert();
+                s.insert(obj.read().unwrap().clone())
+            },
+        }
+    }
+
+    pub fn remove(&mut self, obj: Arc<RwLock<RedisObject>>) -> bool {
+        match self {
+            Self::HashSet(s) => {
+                s.remove(obj.read().unwrap().deref())
+            },
+        }
+    }
+
+    pub fn get_random_key(&self) -> Option<Arc<RwLock<RedisObject>>> {
+        match self {
+            Self::HashSet(s) => {
+                // TODO: random
+                s.iter().nth(0).map(|e| Arc::new(RwLock::new(e.clone())))
+            },
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Self::HashSet(s) => {
+                s.len()
+            },
+        }
+    }
+
+    pub fn contains(&self, obj: Arc<RwLock<RedisObject>>) -> bool {
+        match self {
+            Self::HashSet(s) => {
+                s.contains(obj.read().unwrap().deref())
             },
         }
     }

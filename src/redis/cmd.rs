@@ -865,34 +865,169 @@ fn rpoplpush_command(c: &mut RedisClient) {
 // 
 
 fn sadd_command(c: &mut RedisClient) {
-    match c.lookup_key_write(c.argv[1].read().unwrap().as_key()) {
-        Some(set) => {
-            
+    let mut set: Option<Arc<RwLock<RedisObject>>> = None;
+    let arg_r = c.argv[1].read().unwrap();
+    let key = arg_r.as_key();
+    match c.lookup_key_write(key) {
+        Some(v) => {
+            if !v.read().unwrap().is_set() {
+                c.add_reply(WRONG_TYPE_ERR.clone());
+                return;
+            }
+            set = Some(v);
         },
         None => {
-            
+            let new_set = Arc::new(RwLock::new(RedisObject::Set { s: SetStorageType::HashSet(HashSet::new()) }));
+            c.insert(key, new_set.clone());
+            set = Some(new_set);
         },
+    }
+
+    match set.unwrap().write().unwrap().set_mut() {
+        Some(s_storage) => {
+            if s_storage.insert(c.argv[2].clone()) {
+                server_write().dirty += 1;
+                c.add_reply(C_ONE.clone());
+            } else {
+                c.add_reply(C_ZERO.clone());
+            }
+        },
+        None => { assert!(true, "impossible code"); },
     }
 }
 
 fn srem_command(c: &mut RedisClient) {
-    
+    let arg_r = c.argv[1].read().unwrap();
+    let key = arg_r.as_key();
+    match c.lookup_key_write_or_reply(key, C_ZERO.clone()) {
+        Some(obj) => {
+            match obj.write().unwrap().set_mut() {
+                Some(s_storage) => {
+                    if s_storage.remove(c.argv[2].clone()) {
+                        server_write().dirty += 1;
+                        c.add_reply(C_ONE.clone());
+                    } else {
+                        c.add_reply(C_ZERO.clone());
+                    }
+                },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn spop_command(c: &mut RedisClient) {
-    
+    let arg_r = c.argv[1].read().unwrap();
+    let key = arg_r.as_key();
+    match c.lookup_key_write_or_reply(key, NULL_BULK.clone()) {
+        Some(obj) => {
+            match obj.write().unwrap().set_mut() {
+                Some(s_storage) => {
+                    match s_storage.get_random_key() {
+                        Some(ele) => {
+                            if s_storage.remove(ele.clone()) {
+                                server_write().dirty += 1;
+                                c.add_reply_bulk(ele);
+                            } else {
+                                log(LogLevel::Warning, "failed to remove random element");
+                            }
+                        },
+                        None => { c.add_reply(NULL_BULK.clone()); },
+                    }
+                },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn smove_command(c: &mut RedisClient) {
-    
+    let sarg_r = c.argv[1].read().unwrap();
+    let skey = sarg_r.as_key();
+    let darg_r = c.argv[2].read().unwrap();
+    let dkey = darg_r.as_key();
+    match c.lookup_key_write(skey) {
+        Some(obj) => {
+            match obj.write().unwrap().set_mut() {
+                Some(s_storage) => {
+                    let mut dset: Option<Arc<RwLock<RedisObject>>> = None;
+                    // check destination set type
+                    let mut existed = false;
+                    match c.lookup_key_write(dkey) {
+                        Some(d_obj) => {
+                            match d_obj.write().unwrap().set_mut() {
+                                Some(_ds_storage) => {
+                                    existed = true;
+                                    dset = Some(d_obj.clone());
+                                },
+                                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+                            }
+                        },
+                        None => {},
+                    }
+
+                    if !s_storage.remove(c.argv[3].clone()) {
+                        c.add_reply(C_ZERO.clone());
+                        return;
+                    }
+
+                    if !existed {
+                        let new_set = Arc::new(RwLock::new(RedisObject::Set { s: SetStorageType::HashSet(HashSet::new()) }));
+                        c.insert(dkey, new_set.clone());
+                        dset = Some(new_set);
+                    }
+                    match dset.unwrap().write().unwrap().set_mut() {
+                        Some(ds_storage) => {
+                            ds_storage.insert(c.argv[3].clone());
+                        },
+                        None => { assert!(true, "impossible code"); }
+                    }
+                    server_write().dirty += 1;
+                    c.add_reply(C_ONE.clone());
+                },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => { c.add_reply(C_ZERO.clone()); },
+    }
 }
 
 fn scard_command(c: &mut RedisClient) {
-    
+    let arg_r = c.argv[1].read().unwrap();
+    let key = arg_r.as_key();
+    match c.lookup_key_read_or_reply(key, C_ZERO.clone()) {
+        Some(obj) => {
+            match obj.read().unwrap().set() {
+                Some(s_storage) => {
+                    c.add_reply_u64(s_storage.len() as u64);
+                },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn sismember_command(c: &mut RedisClient) {
-    
+    let arg_r = c.argv[1].read().unwrap();
+    let key = arg_r.as_key();
+    match c.lookup_key_read_or_reply(key, C_ZERO.clone()) {
+        Some(obj) => {
+            match obj.read().unwrap().set() {
+                Some(s_storage) => {
+                    if s_storage.contains(c.argv[2].clone()) {
+                        c.add_reply(C_ONE.clone());
+                    } else {
+                        c.add_reply(C_ZERO.clone());
+                    }
+                },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn sinter_command(c: &mut RedisClient) {
@@ -924,7 +1059,24 @@ fn smembers_command(c: &mut RedisClient) {
 }
 
 fn srandmember_command(c: &mut RedisClient) {
-    
+    let arg_r = c.argv[1].read().unwrap();
+    let key = arg_r.as_key();
+    match c.lookup_key_read_or_reply(key, NULL_BULK.clone()) {
+        Some(obj) => {
+            match obj.read().unwrap().set() {
+                Some(s_storage) => {
+                    match s_storage.get_random_key() {
+                        Some(ele) => {
+                            c.add_reply_bulk(ele);
+                        },
+                        None => { c.add_reply(NULL_BULK.clone()); },
+                    }
+                },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 // 
