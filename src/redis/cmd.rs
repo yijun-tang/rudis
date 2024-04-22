@@ -1120,20 +1120,95 @@ fn sinter_generic_command(c: &mut RedisClient, idx: usize, dst: Option<Arc<RwLoc
     }
 }
 
+#[derive(PartialEq)]
+enum SetOp {
+    Union,
+    Diff,
+    Inter,
+}
+
 fn sunion_command(c: &mut RedisClient) {
-    
+    sunion_diff_generic_command(c, 1, None, SetOp::Union);
 }
 
 fn sunionstore_command(c: &mut RedisClient) {
-    
+    sunion_diff_generic_command(c, 2, Some(c.argv[1].clone()), SetOp::Union);
 }
 
 fn sdiff_command(c: &mut RedisClient) {
-    
+    sunion_diff_generic_command(c, 1, None, SetOp::Diff);
 }
 
 fn sdiffstore_command(c: &mut RedisClient) {
-    
+    sunion_diff_generic_command(c, 2, Some(c.argv[1].clone()), SetOp::Diff);
+}
+
+fn sunion_diff_generic_command(c: &mut RedisClient, idx: usize, dst: Option<Arc<RwLock<RedisObject>>>, op: SetOp) {
+    let mut sets: Vec<Option<Arc<RwLock<RedisObject>>>> = Vec::new();
+
+    for i in idx..c.argv.len() {
+        let arg_r = c.argv[i].read().unwrap();
+        let key = arg_r.as_key();
+        let mut set_obj = c.lookup_key_read(key);
+        if dst.is_some() {
+            set_obj = c.lookup_key_write(key);
+        }
+
+        match set_obj {
+            Some(s_obj) => {
+                match s_obj.read().unwrap().set() {
+                    Some(_) => { sets.push(Some(s_obj.clone())); },
+                    None => {
+                        c.add_reply(WRONG_TYPE_ERR.clone());
+                        return;
+                    },
+                }
+            },
+            None => { sets.push(None); },
+        }
+    }
+
+    let mut acc: HashSet<RedisObject> = HashSet::new();
+    let mut cardinality = 0;
+    for i in 0..sets.len() {
+        if op == SetOp::Diff && i == 0 && sets[i].is_none() { break; }
+        if sets[i].is_none() { continue; }
+
+        let set_r = sets[i].as_ref().unwrap().read().unwrap();
+        let mut iter = set_r.set().unwrap().iter();
+        while let Some(ele) = iter.next() {
+            if op == SetOp::Union || i == 0 {
+                if acc.insert(ele.clone()) {
+                    cardinality += 1;
+                }
+            } else if op == SetOp::Diff {
+                if acc.remove(ele) {
+                    cardinality -= 1;
+                }
+            }
+        }
+
+        if op == SetOp::Diff && cardinality == 0 {
+            break;
+        }
+    }
+
+    match dst {
+        Some(dkey) => {
+            c.delete_key(dkey.read().unwrap().as_key());
+            let new_s = Arc::new(RwLock::new(RedisObject::Set { s: SetStorageType::HashSet(acc) }));
+            c.insert(dkey.read().unwrap().as_key(), new_s);
+
+            server_write().dirty += 1;
+            c.add_reply_str(&format!(":{}\r\n", cardinality));
+        },
+        None => {
+            c.add_reply_str(&format!("*{}\r\n", cardinality));
+            for ele in &acc {
+                c.add_reply_bulk(Arc::new(RwLock::new(ele.clone())));
+            }
+        },
+    }
 }
 
 fn smembers_command(c: &mut RedisClient) {
