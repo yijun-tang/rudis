@@ -1,4 +1,4 @@
-use std::{borrow::{Borrow, BorrowMut}, collections::{HashMap, HashSet, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
+use std::{collections::{HashMap, HashSet, LinkedList}, ops::BitOr, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
 use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR}, server_write};
@@ -1031,11 +1031,93 @@ fn sismember_command(c: &mut RedisClient) {
 }
 
 fn sinter_command(c: &mut RedisClient) {
-    
+    sinter_generic_command(c, 1, None);
 }
 
 fn sinterstore_command(c: &mut RedisClient) {
-    
+    sinter_generic_command(c, 2, Some(c.argv[1].clone()));
+}
+
+fn sinter_generic_command(c: &mut RedisClient, idx: usize, dst: Option<Arc<RwLock<RedisObject>>>) {
+    let mut sets: Vec<Arc<RwLock<RedisObject>>> = Vec::new();
+
+    for i in idx..c.argv.len() {
+        let arg_r = c.argv[i].read().unwrap();
+        let key = arg_r.as_key();
+        let mut set_obj = c.lookup_key_read(key);
+        if dst.is_some() {
+            set_obj = c.lookup_key_write(key);
+        }
+
+        match set_obj {
+            Some(s_obj) => {
+                match s_obj.read().unwrap().set() {
+                    Some(_) => { sets.push(s_obj.clone()); },
+                    None => {
+                        c.add_reply(WRONG_TYPE_ERR.clone());
+                        return;
+                    },
+                }
+            },
+            None => {
+                match dst {
+                    Some(ref dkey) => {
+                        match dkey.write().unwrap().set_mut() {
+                            Some(_) => {
+                                if c.remove(c.argv[i].read().unwrap().as_key()).is_some() {
+                                    server_write().dirty += 1;
+                                }
+                                c.add_reply(C_ZERO.clone());
+                            },
+                            None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+                        }
+                    },
+                    None => { c.add_reply(NULL_MULTI_BULK.clone()); },
+                }
+                return;
+            },
+        }
+    }
+
+    // Sort sets from the smallest to largest, this will improve our algorithm's performace
+    sets.sort_by(|a, b| {
+        a.read().unwrap().set().unwrap().len().cmp(&b.read().unwrap().set().unwrap().len())
+    });
+
+    // Iterate all the elements of the first (smallest) set, and test
+    // the element against all the other sets, if at least one set does
+    // not include the element it is discarded
+    let set0_r = sets[0].read().unwrap();
+    let mut iter = set0_r.set().unwrap().iter();
+    let mut acc: HashSet<RedisObject> = HashSet::new();
+    let mut j = 0usize;
+    while let Some(ele) = iter.next() {
+        j = 1;
+        while j < sets.len() {
+            if !sets[j].read().unwrap().set().unwrap().contains2(ele) { break; }
+            j += 1;
+        }
+        if j != sets.len() { continue; }
+        acc.insert(ele.clone());
+    }
+
+    let len = acc.len();
+    match dst {
+        Some(dkey) => {
+            c.delete_key(dkey.read().unwrap().as_key());
+            let new_s = Arc::new(RwLock::new(RedisObject::Set { s: SetStorageType::HashSet(acc) }));
+            c.insert(dkey.read().unwrap().as_key(), new_s);
+
+            server_write().dirty += 1;
+            c.add_reply_str(&format!(":{}\r\n", len));
+        },
+        None => {
+            c.add_reply_str(&format!("*{}\r\n", len));
+            for ele in &acc {
+                c.add_reply_bulk(Arc::new(RwLock::new(ele.clone())));
+            }
+        },
+    }
 }
 
 fn sunion_command(c: &mut RedisClient) {

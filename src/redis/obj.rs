@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, collections::{HashSet, LinkedList}, hash::Hash, ops::Deref, sync::{Arc, RwLock}};
+use std::{collections::{hash_set::{Intersection, Iter}, HashSet, LinkedList}, hash::{Hash, RandomState}, ops::Deref, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 
 
@@ -427,6 +427,29 @@ impl SetStorageType {
         match self {
             Self::HashSet(s) => {
                 s.contains(obj.read().unwrap().deref())
+            },
+        }
+    }
+    pub fn contains2(&self, obj: &RedisObject) -> bool {
+        match self {
+            Self::HashSet(s) => {
+                s.contains(obj)
+            },
+        }
+    }
+
+    pub fn inter<'a>(&'a self, other: &'a SetStorageType) -> Intersection<RedisObject, RandomState> {
+        match (self, other) {
+            (Self::HashSet(l), Self::HashSet(r)) => {
+                l.intersection(r)
+            },
+        }
+    }
+
+    pub fn iter(&self) -> Iter<RedisObject> {
+        match self {
+            Self::HashSet(s) => {
+                s.iter()
             },
         }
     }

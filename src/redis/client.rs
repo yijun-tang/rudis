@@ -1,4 +1,4 @@
-use std::{collections::{HashSet, LinkedList}, ops::Deref, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
+use std::{collections::{HashSet, LinkedList}, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
 use libc::close;
 use once_cell::sync::Lazy;
 use crate::{ae::{create_file_event, delete_file_event, el::Mask, handler::{read_query_from_client, send_reply_to_client}}, anet::{nonblock, tcp_no_delay}, redis::{cmd::lookup_command, server_read, server_write}, util::{log, timestamp, LogLevel}, zmalloc::used_memory};
@@ -484,6 +484,11 @@ impl RedisClient {
         let mut db_w = db.write().unwrap();
         db_w.dict.insert(key.to_string(), value);
     }
+    pub fn remove(&self, key: &str) -> Option<Arc<RwLock<RedisObject>>> {
+        let db = self.db.clone().expect("db doesn't exist");
+        let mut db_w = db.write().unwrap();
+        db_w.dict.remove(key)
+    }
     pub fn remove_expire(&self, key: &str) {
         let db = self.db.clone().expect("db doesn't exist");
         let mut db_w = db.write().unwrap();
@@ -498,6 +503,12 @@ impl RedisClient {
         let db = self.db.clone().expect("db doesn't exist");
         let mut db_w = db.write().unwrap();
         db_w.blocking_keys.remove(key);
+    }
+    pub fn delete_key(&self, key: &str) {
+        let db = self.db.clone().expect("db doesn't exist");
+        let mut db_w = db.write().unwrap();
+        db_w.expires.remove(key);
+        db_w.dict.remove(key);
     }
 
     /// Unblock a client that's waiting in a blocking operation such as BLPOP
