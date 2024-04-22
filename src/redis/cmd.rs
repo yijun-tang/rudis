@@ -68,7 +68,7 @@ static CMD_TABLE: Lazy<HashMap<&str, Arc<RedisCommand>>> = Lazy::new(|| {
         ("sunionstore", Arc::new(RedisCommand { name: "sunionstore", proc: Arc::new(sunionstore_command), arity: -3, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 2, vm_lastkey: -1, vm_keystep: 1 })),
         ("sdiff", Arc::new(RedisCommand { name: "sdiff", proc: Arc::new(sdiff_command), arity: -2, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: -1, vm_keystep: 1 })),
         ("sdiffstore", Arc::new(RedisCommand { name: "sdiffstore", proc: Arc::new(sdiffstore_command), arity: -3, flags: CmdFlags::inline() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 2, vm_lastkey: -1, vm_keystep: 1 })),
-        ("smembers", Arc::new(RedisCommand { name: "smembers", proc: Arc::new(smembers_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
+        ("smembers", Arc::new(RedisCommand { name: "smembers", proc: Arc::new(sinter_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
         ("srandmember", Arc::new(RedisCommand { name: "srandmember", proc: Arc::new(srandmember_command), arity: 2, flags: CmdFlags::inline(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
         ("zadd", Arc::new(RedisCommand { name: "zadd", proc: Arc::new(zadd_command), arity: 4, flags: CmdFlags::bulk() | CmdFlags::deny_oom(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
         ("zrem", Arc::new(RedisCommand { name: "zrem", proc: Arc::new(zrem_command), arity: 3, flags: CmdFlags::bulk(), vm_preload_proc: None, vm_firstkey: 1, vm_lastkey: 1, vm_keystep: 1 })),
@@ -1209,10 +1209,6 @@ fn sunion_diff_generic_command(c: &mut RedisClient, idx: usize, dst: Option<Arc<
             }
         },
     }
-}
-
-fn smembers_command(c: &mut RedisClient) {
-    
 }
 
 fn srandmember_command(c: &mut RedisClient) {
