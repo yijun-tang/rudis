@@ -1,5 +1,7 @@
-use std::{collections::{hash_set::{Intersection, Iter}, HashSet, LinkedList}, hash::{Hash, RandomState}, ops::Deref, sync::{Arc, RwLock}};
+use std::{cmp::Ordering, collections::{hash_set::{Intersection, Iter}, HashMap, HashSet, LinkedList}, hash::{Hash, RandomState}, ops::Deref, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
+
+use super::skiplist::SkipList;
 
 
 /// 
@@ -110,7 +112,9 @@ pub enum RedisObject {
     Set {
         s: SetStorageType,
     },
-    ZSet,
+    ZSet {
+        zs: ZSetStorageType,
+    },
     Hash,
 }
 impl RedisObject {
@@ -170,6 +174,20 @@ impl RedisObject {
     pub fn set(&self) -> Option<&SetStorageType> {
         match self {
             Self::Set { s } => { Some(s) },
+            _ => { None },
+        }
+    }
+
+    pub fn zset_mut(&mut self) -> Option<&mut ZSetStorageType> {
+        match self {
+            Self::ZSet { zs } => { Some(zs) },
+            _ => { None },
+        }
+    }
+
+    pub fn zset(&self) -> Option<&ZSetStorageType> {
+        match self {
+            Self::ZSet { zs } => { Some(zs) },
             _ => { None },
         }
     }
@@ -340,7 +358,7 @@ impl ListStorageType {
             Self::LinkedList(l) => {
                 let mut iter = l.iter();
                 while let Some(e) = iter.next() {
-                    if compare_string_objects(e, &obj) {
+                    if eq_string_objects(e, &obj) {
                         removed += 1;
                         if n > 0 && removed == n { break; }
                     } else {
@@ -363,7 +381,7 @@ impl ListStorageType {
             Self::LinkedList(l) => {
                 let mut iter = l.iter().rev();
                 while let Some(e) = iter.next() {
-                    if compare_string_objects(e, &obj) {
+                    if eq_string_objects(e, &obj) {
                         removed += 1;
                         if n > 0 && removed == n { break; }
                     } else {
@@ -459,6 +477,41 @@ impl PartialEq for SetStorageType {
         false
     }
 }
+#[derive(Clone)]
+pub enum ZSetStorageType {
+    SkipList(HashMap<RedisObject, f64>, SkipList)
+}
+impl ZSetStorageType {
+    pub fn dict(&self) -> &HashMap<RedisObject, f64> {
+        match self {
+            Self::SkipList(d, _) => d
+        }
+    }
+
+    pub fn dict_mut(&mut self) -> &mut HashMap<RedisObject, f64> {
+        match self {
+            Self::SkipList(d, _) => d
+        }
+    }
+
+    pub fn skiplist(&self) -> &SkipList {
+        match self {
+            Self::SkipList(_, s) => s
+        }
+    }
+
+    pub fn skiplist_mut(&mut self) -> &mut SkipList {
+        match self {
+            Self::SkipList(_, s) => s
+        }
+    }
+}
+impl PartialEq for ZSetStorageType {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+impl Eq for ZSetStorageType {}
 
 pub fn try_object_sharing(obj: Arc<RwLock<RedisObject>>) {
     todo!()
@@ -526,7 +579,7 @@ fn is_string_representable_as_int(s: &str) -> Result<isize, String> {
 /// binary safe.
 /// 
 /// NOTE: USING get_decoded() FOR SIMPLICITY
-fn compare_string_objects(obj1: &RedisObject, obj2: &Arc<RwLock<RedisObject>>) -> bool {
+pub fn eq_string_objects(obj1: &RedisObject, obj2: &Arc<RwLock<RedisObject>>) -> bool {
     match obj1 {
         RedisObject::String { ptr: _ } => {},
         _ => { return false; }
@@ -537,4 +590,17 @@ fn compare_string_objects(obj1: &RedisObject, obj2: &Arc<RwLock<RedisObject>>) -
     }
     obj1.get_decoded().string().unwrap().string().unwrap()
         .eq(obj2.read().unwrap().get_decoded().string().unwrap().string().unwrap())
+}
+// TODO: replicated
+pub fn compare_string_objects(obj1: &RedisObject, obj2: &RedisObject) -> Ordering {
+    match obj1 {
+        RedisObject::String { ptr: _ } => {},
+        _ => { assert!(true, "impossible code"); }
+    }
+    match obj2.string() {
+        Some(_) => {},
+        None => { assert!(true, "impossible code"); }
+    }
+    obj1.get_decoded().string().unwrap().string().unwrap()
+        .cmp(obj2.get_decoded().string().unwrap().string().unwrap())
 }

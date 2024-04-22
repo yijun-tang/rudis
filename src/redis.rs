@@ -8,6 +8,7 @@ pub mod config;
 pub mod client;
 pub mod cmd;
 pub mod obj;
+pub mod skiplist;
 pub mod db;
 pub mod signal;
 pub mod vm;

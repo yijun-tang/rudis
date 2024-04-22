@@ -434,6 +434,10 @@ impl RedisClient {
     pub fn add_reply_u64(&self, n: u64) {
         self.add_reply_str(&format!(":{}\r\n", n.to_string()));
     }
+    pub fn add_reply_f64(&self, f: f64) {
+        let s = f.to_string();
+        self.add_reply_str(&format!("${}\r\n{}\r\n", s.len(), s));
+    }
 
     pub fn lookup_key_read_or_reply(&self, key: &str, obj: Arc<RwLock<RedisObject>>) -> Option<Arc<RwLock<RedisObject>>> {
         match self.lookup_key_read(key) {

@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet, LinkedList}, ops::BitOr, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
-use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR}, server_write};
+use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR}, server_write, skiplist::SkipList};
 
 
 /// 
@@ -1237,15 +1237,93 @@ fn srandmember_command(c: &mut RedisClient) {
 // 
 
 fn zadd_command(c: &mut RedisClient) {
-    
+    let mut score = 0f64;
+    match c.argv[2].read().unwrap().as_key().parse() {
+        Ok(f) => { score = f; },
+        Err(_) => {
+            log(LogLevel::Warning, &format!("failed to parse score: '{}'", c.argv[2].read().unwrap().as_key()));
+            return;
+        },
+    }
+
+    let key = c.argv[1].read().unwrap().as_key().to_string();
+    let obj = c.argv[3].clone();
+    zadd_generic_command(c, &key, obj, score, false);
 }
 
 fn zrem_command(c: &mut RedisClient) {
     
 }
 
+/// This generic command implements both ZADD and ZINCRBY.
+/// `score_val` is the score if the operation is a ZADD (do_incr == false) or
+/// the increment if the operation is a ZINCRBY (do_incr == true).
+fn zadd_generic_command(c: &mut RedisClient, key: &str, obj: Arc<RwLock<RedisObject>>, score_val: f64, do_incr: bool) {
+    let zset = match c.lookup_key_write(key) {
+        Some(z_obj) => {
+            match z_obj.read().unwrap().zset() {
+                Some(_) => {},
+                None => {
+                    c.add_reply(WRONG_TYPE_ERR.clone());
+                    return;
+                },
+            }
+            z_obj
+        },
+        None => {
+            let new_zset = Arc::new(RwLock::new(RedisObject::ZSet { zs: ZSetStorageType::SkipList(HashMap::new(), SkipList::new()) }));
+            c.insert(key, new_zset.clone());
+            new_zset
+        },
+    };
+
+    let mut score = score_val;
+    if do_incr {
+        match zset.read().unwrap().zset().unwrap().dict().get(&obj.read().unwrap()) {
+            Some(old_s) => { score += old_s; },
+            None => {},
+        }
+    }
+
+    let mut zset_w = zset.write().unwrap();
+    let ele = Arc::new(obj.read().unwrap().clone());
+    match zset_w.zset_mut().unwrap().dict_mut().insert(obj.read().unwrap().clone(), score) {
+        None => {
+            zset_w.zset_mut().unwrap().skiplist_mut().insert(score, ele.clone());
+            server_write().dirty += 1;
+            if do_incr {
+                c.add_reply_f64(score);
+            } else {
+                c.add_reply(C_ONE.clone());
+            }
+        },
+        Some(old_s) => {
+            if old_s != score {
+                zset_w.zset_mut().unwrap().skiplist_mut().delete(old_s, ele.clone());
+                zset_w.zset_mut().unwrap().skiplist_mut().insert(score, ele.clone());
+            }
+            if do_incr {
+                c.add_reply_f64(score);
+            } else {
+                c.add_reply(C_ZERO.clone());
+            }
+        },
+    }
+}
+
 fn zincrby_command(c: &mut RedisClient) {
-    
+    let mut incr = 0f64;
+    match c.argv[2].read().unwrap().as_key().parse() {
+        Ok(f) => { incr = f; },
+        Err(_) => {
+            log(LogLevel::Warning, &format!("failed to parse incr: '{}'", c.argv[2].read().unwrap().as_key()));
+            return;
+        },
+    }
+
+    let key = c.argv[1].read().unwrap().as_key().to_string();
+    let obj = c.argv[3].clone();
+    zadd_generic_command(c, &key, obj, incr, true);
 }
 
 fn zrange_command(c: &mut RedisClient) {
