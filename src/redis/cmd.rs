@@ -205,15 +205,40 @@ fn auth_command(c: &mut RedisClient) {
 }
 
 fn exists_command(c: &mut RedisClient) {
-    
+    let ret_obj = match c.lookup_key_read(c.argv[1].read().unwrap().as_key()) {
+        Some(_) => C_ONE.clone(),
+        None => C_ZERO.clone(),
+    };
+    c.add_reply(ret_obj);
 }
 
 fn del_command(c: &mut RedisClient) {
-    
+    let mut deleted = 0;
+    for i in 1..c.argv.len() {
+        match c.delete_key(c.argv[i].read().unwrap().as_key()) {
+            Some(_) => {
+                server_write().dirty += 1;
+                deleted += 1;
+            },
+            None => {},
+        }
+    }
+    c.add_reply_u64(deleted);
 }
 
 fn type_command(c: &mut RedisClient) {
-    
+    let ret = match c.lookup_key_read(c.argv[1].read().unwrap().as_key()) {
+        Some(obj) => {
+            if obj.read().unwrap().is_string() { "+string" }
+            else if obj.read().unwrap().is_list() { "+list" }
+            else if obj.read().unwrap().is_set() { "+set" }
+            else if obj.read().unwrap().is_zset() { "+zset" }
+            else { "+unknown" }
+        },
+        None => { "+none" },
+    };
+    c.add_reply_str(ret);
+    c.add_reply(CRLF.clone());
 }
 
 fn keys_command(c: &mut RedisClient) {

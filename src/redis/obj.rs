@@ -114,7 +114,6 @@ pub enum RedisObject {
     ZSet {
         zs: ZSetStorageType,
     },
-    Hash,
 }
 impl RedisObject {
     pub fn is_string(&self) -> bool {
@@ -174,6 +173,13 @@ impl RedisObject {
         match self {
             Self::Set { s } => { Some(s) },
             _ => { None },
+        }
+    }
+
+    pub fn is_zset(&self) -> bool {
+        match self {
+            Self::ZSet { zs: _ } => true,
+            _ => false,
         }
     }
 

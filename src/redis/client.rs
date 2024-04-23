@@ -508,11 +508,11 @@ impl RedisClient {
         let mut db_w = db.write().unwrap();
         db_w.blocking_keys.remove(key);
     }
-    pub fn delete_key(&self, key: &str) {
+    pub fn delete_key(&self, key: &str) -> Option<Arc<RwLock<RedisObject>>> {
         let db = self.db.clone().expect("db doesn't exist");
         let mut db_w = db.write().unwrap();
         db_w.expires.remove(key);
-        db_w.dict.remove(key);
+        db_w.dict.remove(key)
     }
 
     /// Unblock a client that's waiting in a blocking operation such as BLPOP
