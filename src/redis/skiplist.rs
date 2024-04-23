@@ -1,7 +1,5 @@
-use std::{cmp::Ordering, os::unix::net, sync::{Arc, RwLock, Weak}};
-
+use std::{cmp::Ordering, sync::{Arc, RwLock, Weak}};
 use rand::Rng;
-
 use super::obj::{compare_string_objects, RedisObject};
 
 const SKIPLIST_MAXLEVEL: usize = 32;

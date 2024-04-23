@@ -1252,7 +1252,25 @@ fn zadd_command(c: &mut RedisClient) {
 }
 
 fn zrem_command(c: &mut RedisClient) {
-    
+    match c.lookup_key_write_or_reply(c.argv[1].read().unwrap().as_key(), C_ZERO.clone()) {
+        Some(z_obj) => {
+            match z_obj.write().unwrap().zset_mut() {
+                Some(zs_storage) => {
+                    match zs_storage.dict().get(&c.argv[2].read().unwrap()).cloned() {
+                        Some(old_score) => {
+                            zs_storage.skiplist_mut().delete(old_score, Arc::new(c.argv[2].read().unwrap().clone()));
+                            zs_storage.dict_mut().remove(&c.argv[2].read().unwrap());
+                            server_write().dirty += 1;
+                            c.add_reply(C_ONE.clone());
+                        },
+                        None => { c.add_reply(C_ZERO.clone()); },
+                    }
+                },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 /// This generic command implements both ZADD and ZINCRBY.
