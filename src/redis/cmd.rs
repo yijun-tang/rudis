@@ -1434,11 +1434,32 @@ fn zrangebyscore_command(c: &mut RedisClient) {
 }
 
 fn zcard_command(c: &mut RedisClient) {
-    
+    match c.lookup_key_read_or_reply(c.argv[1].read().unwrap().as_key(), C_ZERO.clone()) {
+        Some(z_obj) => {
+            match z_obj.read().unwrap().zset() {
+                Some(zset) => { c.add_reply_u64(zset.skiplist().len() as u64); },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn zscore_command(c: &mut RedisClient) {
-    
+    match c.lookup_key_read_or_reply(c.argv[1].read().unwrap().as_key(), NULL_BULK.clone()) {
+        Some(z_obj) => {
+            match z_obj.read().unwrap().zset() {
+                Some(zset) => {
+                    match zset.dict().get(&c.argv[2].read().unwrap()) {
+                        Some(score) => { c.add_reply_f64(*score); },
+                        None => { c.add_reply(NULL_BULK.clone()); },
+                    }
+                },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn zremrangebyscore_command(c: &mut RedisClient) {
