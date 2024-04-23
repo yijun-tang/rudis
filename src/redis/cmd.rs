@@ -1430,7 +1430,103 @@ fn zrange_generic_command(c: &mut RedisClient, reverse: bool) {
 }
 
 fn zrangebyscore_command(c: &mut RedisClient) {
-    
+    let mut min = 0f64;
+    let mut max = 0f64;
+    match (c.argv[2].read().unwrap().as_key().parse(), c.argv[3].read().unwrap().as_key().parse()) {
+        (Ok(s), Ok(e)) => {
+            min = s;
+            max = e;
+        },
+        _ => {
+            log(LogLevel::Warning, &format!("failed to parse args: '{}', '{}'", c.argv[2].read().unwrap().as_key(), c.argv[3].read().unwrap().as_key()));
+            return;
+        }
+    }
+
+    // Parse "WITHSCORES"
+    let mut with_score = false;
+    let mut bad_syntax = false;
+    if c.argv.len() == 5 || c.argv.len() == 8 {
+        if c.argv[c.argv.len() - 1].read().unwrap().as_key().eq_ignore_ascii_case("withscores") {
+            with_score = true;
+        } else {
+            bad_syntax = true;
+        }
+    }
+    let n: usize = if with_score {1} else {0};
+    if c.argv.len() != 4 + n && c.argv.len() != 7 + n {
+        bad_syntax = true;
+    }
+    if bad_syntax {
+        c.add_reply_str("-ERR wrong number of arguments for ZRANGEBYSCORE\r\n");
+        return;
+    }
+
+    // Parse "LIMIT"
+    let mut limit = -1;
+    let mut offset = 0;
+    if c.argv.len() == 7 + n && !c.argv[4].read().unwrap().as_key().eq_ignore_ascii_case("limit") {
+        c.add_reply(SYNTAX_ERR.clone());
+        return;
+    } else if c.argv.len() == 7 + n {
+        match (c.argv[5].read().unwrap().as_key().parse(), c.argv[6].read().unwrap().as_key().parse()) {
+            (Ok(o), Ok(l)) => {
+                offset = o;
+                limit = l;
+                if limit < 0 { offset = 0; }
+            },
+            _ => {
+                log(LogLevel::Warning, &format!("failed to parse args: '{}', '{}'", c.argv[5].read().unwrap().as_key(), c.argv[6].read().unwrap().as_key()));
+                return;
+            }
+        }
+    }
+
+    match c.lookup_key_read(c.argv[1].read().unwrap().as_key()) {
+        Some(z_obj) => {
+            match z_obj.read().unwrap().zset() {
+                Some(zset) => {
+                    let mut ln = zset.skiplist().first_with_score(min);
+                    if ln.is_none() {
+                        c.add_reply(EMPTY_MULTI_BULK.clone());
+                    }
+                    
+                    let mut objs: Vec<Arc<RedisObject>> = Vec::new();
+                    let mut scores: Vec<f64> = Vec::new();
+                    while ln.is_some() {
+                        let node = ln.clone().unwrap();
+                        if node.read().unwrap().score() > max {
+                            break;
+                        }
+
+                        if offset > 0 {
+                            offset -= 1;
+                            ln = ln.unwrap().read().unwrap().forward(0);
+                            continue;
+                        }
+
+                        if limit == 0 { break; }
+                        objs.push(node.read().unwrap().obj().unwrap());
+                        if with_score { scores.push(node.read().unwrap().score()); }
+                        ln = ln.unwrap().read().unwrap().forward(0);
+
+                        if limit > 0 { limit -= 1; }
+                    }
+
+                    match with_score {
+                        true => { c.add_reply_str(&format!("*{}\r\n", objs.len() * 2)); },
+                        false => { c.add_reply_str(&format!("*{}\r\n", objs.len())); },
+                    }
+                    for i in 0..objs.len() {
+                        c.add_reply_bulk(Arc::new(RwLock::new(objs[i].deref().clone())));
+                        if with_score { c.add_reply_f64(scores[i]); }
+                    }
+                },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => { c.add_reply(NULL_MULTI_BULK.clone()); },
+    }
 }
 
 fn zcard_command(c: &mut RedisClient) {

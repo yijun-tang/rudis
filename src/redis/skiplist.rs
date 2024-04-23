@@ -196,6 +196,23 @@ impl SkipList {
         None
     }
 
+    /// Find the first node having a score equal or greater than the specified one.
+    /// Returns None if there is no match.
+    pub fn first_with_score(&self, score: f64) -> Option<Arc<RwLock<SkipListNode>>> {
+        let mut x = self.header.clone();
+        for i in (0..self.level).rev() {
+            while x.read().unwrap().forward[i].is_some() {
+                let next = x.read().unwrap().forward[i].clone().unwrap();
+                if next.read().unwrap().score < score {
+                    x = next;
+                    continue;
+                }
+                break;
+            }
+        }
+        return x.read().unwrap().forward[0].clone();
+    }
+
     pub fn len(&self) -> usize {
         self.length
     }
