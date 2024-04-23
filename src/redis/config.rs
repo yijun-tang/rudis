@@ -1,6 +1,5 @@
-use std::{fs::{File, OpenOptions}, io::{self, BufRead, BufReader, Read}, process::exit};
-use libc::{chdir, strerror};
-use crate::util::{error, log, yes_no_to_bool, LogLevel};
+use std::{env::set_current_dir, fs::{File, OpenOptions}, io::{self, BufRead, BufReader, Read}, process::exit};
+use crate::util::{log, yes_no_to_bool, LogLevel};
 use super::{AppendFsync, RedisServer, ReplState};
 
 
@@ -92,16 +91,13 @@ impl RedisServer {
                         if !err.is_empty() { load_err(&err, trimed_line, line_num); }
                     },
                     "dir" if argc == 2 => {
-                        let mut err = String::new();
-                        let ret_val = unsafe {
-                            let ret = chdir(argv[1].as_ptr() as *const i8);
-                            if ret == -1 { err = format!("{}", *strerror(error())); }
-                            ret
+                        match set_current_dir(argv[1]) {
+                            Ok(_) => {},
+                            Err(e) => {
+                                log(LogLevel::Warning, &format!("Can't chdir to '{}': {}", argv[1], e));
+                                exit(1);
+                            },
                         };
-                        if ret_val == -1 {
-                            log(LogLevel::Warning, &format!("Can't chdir to '{}': {}", argv[1], err));
-                            exit(1);
-                        }
                     },
                     "loglevel" if argc == 2 => {
                         match &argv[1].to_ascii_lowercase()[..] {

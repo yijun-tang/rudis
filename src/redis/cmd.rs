@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
-use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, SYNTAX_ERR}, server_write, skiplist::SkipList};
+use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, SYNTAX_ERR}, server_read, server_write, skiplist::SkipList};
 
 
 /// 
@@ -195,7 +195,13 @@ pub fn discard_command(c: &mut RedisClient) {
 }
 
 fn auth_command(c: &mut RedisClient) {
-
+    if server_read().require_pass.is_empty() || server_read().require_pass.eq(c.argv[1].read().unwrap().as_key()) {
+        c.authenticated = true;
+        c.add_reply(OK.clone());
+    } else {
+        c.authenticated = false;
+        c.add_reply_str("-ERR invalid password\r\n");
+    }
 }
 
 fn exists_command(c: &mut RedisClient) {

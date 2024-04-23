@@ -46,7 +46,7 @@ pub struct RedisClient {
     pub reply: RwLock<LinkedList<Arc<RedisObject>>>,
     pub flags: ClientFlags,
     pub last_interaction: u64,          // time of the last interaction, used for timeout (in seconds)
-    authenticated: bool,            // when requirepass is non-NULL
+    pub authenticated: bool,            // when requirepass is non-NULL
     repl_state: ReplState,          // replication state if this is a slave
     mstate: MultiState,             // MULTI/EXEC state
     blocking_keys: RwLock<Vec<Arc<RedisObject>>>,   // The key we are waiting to terminate a blocking
