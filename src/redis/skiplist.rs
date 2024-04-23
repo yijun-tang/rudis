@@ -171,6 +171,41 @@ impl SkipList {
         self.length -= 1;
     }
 
+    /// Finds an element by its rank. The rank argument needs to be 1-based.
+    pub fn get_ele_by_rank(&self, rank: usize) -> Option<Arc<RwLock<SkipListNode>>> {
+        let mut traversed = 0usize;
+        let mut x = self.header.clone();
+
+        for i in (0..self.level).rev() {
+            while x.read().unwrap().forward[i].is_some() {
+                let steps = match i > 0 {
+                    true => x.read().unwrap().span[i - 1],
+                    false => 1,
+                };
+
+                if traversed + steps > rank { break; }
+                traversed += steps;
+                let n = x.read().unwrap().forward[i].as_ref().unwrap().clone();
+                x = n;
+            }
+
+            if traversed == rank {
+                return Some(x);
+            }
+        }
+        None
+    }
+
+    pub fn len(&self) -> usize {
+        self.length
+    }
+    pub fn tail(&self) -> Option<Arc<RwLock<SkipListNode>>> {
+        self.tail.clone()
+    }
+    pub fn header(&self, level: usize) -> Option<Arc<RwLock<SkipListNode>>>  {
+        self.header.read().unwrap().forward[level].clone()
+    }
+
     /// The probability of stepping upward is 1/4.
     fn randome_level(&self) -> usize {
         let mut rand_gen = rand::thread_rng();
@@ -203,5 +238,24 @@ impl SkipListNode {
             score: score,
             obj,
         }
+    }
+
+    pub fn obj(&self) -> Option<Arc<RedisObject>> {
+        self.obj.clone()
+    }
+
+    pub fn score(&self) -> f64 {
+        self.score
+    }
+
+    pub fn backward(&self) -> Option<Arc<RwLock<SkipListNode>>>  {
+        match self.backward.clone() {
+            Some(pre) => pre.upgrade(),
+            None => None,
+        }
+    }
+
+    pub fn forward(&self, level: usize) -> Option<Arc<RwLock<SkipListNode>>> {
+        self.forward[level].clone()
     }
 }

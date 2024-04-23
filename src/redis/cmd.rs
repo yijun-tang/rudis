@@ -1,7 +1,7 @@
-use std::{collections::{HashMap, HashSet, LinkedList}, ops::BitOr, sync::{Arc, RwLock}};
+use std::{collections::{HashMap, HashSet, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
-use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR}, server_write, skiplist::SkipList};
+use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, SYNTAX_ERR}, server_write, skiplist::SkipList};
 
 
 /// 
@@ -1345,11 +1345,88 @@ fn zincrby_command(c: &mut RedisClient) {
 }
 
 fn zrange_command(c: &mut RedisClient) {
-    
+    zrange_generic_command(c, false);
 }
 
 fn zrevrange_command(c: &mut RedisClient) {
-    
+    zrange_generic_command(c, true);
+}
+
+fn zrange_generic_command(c: &mut RedisClient, reverse: bool) {
+    let mut start = 0i32;
+    let mut end = 0i32;
+    match (c.argv[2].read().unwrap().as_key().parse(), c.argv[3].read().unwrap().as_key().parse()) {
+        (Ok(s), Ok(e)) => {
+            start = s;
+            end = e;
+        },
+        _ => {
+            log(LogLevel::Warning, &format!("failed to parse args: '{}', '{}'", c.argv[2].read().unwrap().as_key(), c.argv[3].read().unwrap().as_key()));
+            return;
+        }
+    }
+
+    let mut with_score = false;
+    if c.argv.len() == 5 && c.argv[4].read().unwrap().as_key().eq_ignore_ascii_case("withscores") {
+        with_score = true;
+    } else if c.argv.len() >= 5 {
+        c.add_reply(SYNTAX_ERR.clone());
+        return;
+    }
+
+    match c.lookup_key_read_or_reply(c.argv[1].read().unwrap().as_key(), NULL_MULTI_BULK.clone()) {
+        Some(z_obj) => {
+            match z_obj.read().unwrap().zset() {
+                Some(zs_storage) => {
+                    let zsl = zs_storage.skiplist();
+                    let len = zsl.len();
+                    // convert negative indexes
+                    if start < 0 { start += len as i32; }
+                    if end < 0 { end += len as i32; }
+                    if start < 0 { start = 0; }
+                    if end < 0 { end = 0; }
+
+                    // indexes sanity checks
+                    if start > end || start >= len as i32 {
+                        c.add_reply(EMPTY_MULTI_BULK.clone());
+                        return;
+                    }
+                    if end >= len as i32 { end = len as i32; }
+                    let range_len = end - start;
+
+                    let mut ln = match reverse {
+                        true => match start == 0 {
+                            true => zsl.tail(),
+                            false => zsl.get_ele_by_rank(len - start as usize),
+                        },
+                        false => match start == 0 {
+                            true => zsl.header(0),
+                            false => zsl.get_ele_by_rank(start as usize + 1),
+                        },
+                    };
+
+                    match with_score {
+                        true => c.add_reply_str(&format!("*{}\r\n", 2 * range_len)),
+                        false => c.add_reply_str(&format!("*{}\r\n", range_len)),
+                    };
+                    for _ in 0..range_len {
+                        let node = ln.clone().unwrap();
+                        let obj = node.read().unwrap().obj();
+                        c.add_reply_bulk(Arc::new(RwLock::new(obj.unwrap().deref().clone())));
+                        if with_score {
+                            c.add_reply_f64(node.read().unwrap().score());
+                        }
+                        ln = match reverse {
+                            true => { node.read().unwrap().backward() },
+                            false => { node.read().unwrap().forward(0) },
+                        };
+                    }
+                },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn zrangebyscore_command(c: &mut RedisClient) {
