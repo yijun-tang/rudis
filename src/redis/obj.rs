@@ -1,6 +1,5 @@
 use std::{cmp::Ordering, collections::{hash_set::{Intersection, Iter}, HashMap, HashSet, LinkedList}, hash::{Hash, RandomState}, ops::Deref, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
-
 use super::skiplist::SkipList;
 
 
@@ -503,6 +502,12 @@ impl ZSetStorageType {
     pub fn skiplist_mut(&mut self) -> &mut SkipList {
         match self {
             Self::SkipList(_, s) => s
+        }
+    }
+
+    pub fn delete_range_by_score(&mut self, min: f64, max: f64) -> usize {
+        match self {
+            Self::SkipList(d, s) => s.delete_range_by_score(min, max, d)
         }
     }
 }

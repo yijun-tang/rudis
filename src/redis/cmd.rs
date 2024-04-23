@@ -1559,7 +1559,32 @@ fn zscore_command(c: &mut RedisClient) {
 }
 
 fn zremrangebyscore_command(c: &mut RedisClient) {
-    
+    let mut min = 0f64;
+    let mut max = 0f64;
+    match (c.argv[2].read().unwrap().as_key().parse(), c.argv[3].read().unwrap().as_key().parse()) {
+        (Ok(s), Ok(e)) => {
+            min = s;
+            max = e;
+        },
+        _ => {
+            log(LogLevel::Warning, &format!("failed to parse args: '{}', '{}'", c.argv[2].read().unwrap().as_key(), c.argv[3].read().unwrap().as_key()));
+            return;
+        }
+    }
+
+    match c.lookup_key_write_or_reply(c.argv[1].read().unwrap().as_key(), C_ZERO.clone()) {
+        Some(z_obj) => {
+            match z_obj.write().unwrap().zset_mut() {
+                Some(zset) => {
+                    let deleted = zset.delete_range_by_score(min, max);
+                    server_write().dirty += deleted as u128;
+                    c.add_reply_u64(deleted as u64);
+                },
+                None => { c.add_reply(WRONG_TYPE_ERR.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn sort_command(c: &mut RedisClient) {

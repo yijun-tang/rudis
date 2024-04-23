@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, sync::{Arc, RwLock, Weak}};
+use std::{cmp::Ordering, collections::HashMap, sync::{Arc, RwLock, Weak}};
 use rand::Rng;
 use super::obj::{compare_string_objects, RedisObject};
 
@@ -211,6 +211,44 @@ impl SkipList {
             }
         }
         return x.read().unwrap().forward[0].clone();
+    }
+
+    /// Delete all the elements with score between min and max from the skiplist.
+    /// Min and mx are inclusive, so a score >= min || score <= max is deleted.
+    /// Note that this function takes the reference to the hash table view of the
+    /// sorted set, in order to remove the elements from the hash table too.
+    pub fn delete_range_by_score(&mut self, min: f64, max: f64, dict: &mut HashMap<RedisObject, f64>) -> usize {
+        let mut update: Vec<Option<Arc<RwLock<SkipListNode>>>> = Vec::with_capacity(SKIPLIST_MAXLEVEL);
+        for _ in 0..SKIPLIST_MAXLEVEL { update.push(None); }
+
+        let mut x = self.header.clone();
+        for i in (0..self.level).rev() {
+            while x.read().unwrap().forward[i].is_some() {
+                let next = x.read().unwrap().forward[i].clone();
+                if next.clone().unwrap().read().unwrap().score < min {
+                    x = next.unwrap();
+                    continue;
+                }
+                break;
+            }
+            update[i] = Some(x.clone());
+        }
+
+        let mut x = x.read().unwrap().forward[0].clone();
+        let mut removed = 0;
+        while x.is_some() {
+            let node_r = x.clone().unwrap();
+            if node_r.read().unwrap().score > max {
+                break;
+            }
+
+            let next = node_r.read().unwrap().forward(0);
+            self.delete_node(node_r.clone(), &mut update);
+            dict.remove(node_r.read().unwrap().obj.clone().unwrap().as_ref());
+            removed += 1;
+            x = next;
+        }
+        removed
     }
 
     pub fn len(&self) -> usize {
