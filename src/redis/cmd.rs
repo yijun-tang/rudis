@@ -368,15 +368,69 @@ fn select_command(c: &mut RedisClient) {
 }
 
 fn move_command(c: &mut RedisClient) {
-    
+    let mut dst_id = 0;
+    match c.argv[2].read().unwrap().as_key().parse() {
+        Ok(i) => { dst_id = i; },
+        Err(e) => {
+            log(LogLevel::Warning, &format!("failed to parse DB index '{}': {}", c.argv[2].read().unwrap().as_key(), e));
+            return;
+        },
+    }
+
+    // Obtain source and target DB pointers
+    let src_id = c.db.as_ref().unwrap().read().unwrap().id;
+    if !c.select_db(dst_id) {
+        c.add_reply(OUT_OF_RANGE_ERR.clone());
+        return;
+    }
+    c.select_db(src_id);    // Back to the source DB
+
+    // If the user is moving using as target the same
+    // DB as the source DB it is probably an error.
+    if src_id == dst_id {
+        c.add_reply(SAME_OBJECT_ERR.clone());
+        return;
+    }
+
+    // Check if the element exists and get a reference
+    let mut obj: Option<Arc<RwLock<RedisObject>>> = None;
+    match c.lookup_key_write(c.argv[1].read().unwrap().as_key()) {
+        Some(o) => { obj = Some(o); },
+        None => {
+            c.add_reply(C_ZERO.clone());
+            return;
+        },
+    };
+
+    // Try to add the element to the target DB
+    c.select_db(dst_id);
+    if c.contains(c.argv[1].read().unwrap().as_key()) {
+        c.add_reply(C_ZERO.clone());
+        return;
+    }
+    c.delete_if_volatile(c.argv[1].read().unwrap().as_key());
+    c.insert(c.argv[1].read().unwrap().as_key(), obj.unwrap());
+
+    // OK! key moved, free the entry in the source DB
+    c.select_db(src_id);
+    c.delete_key(c.argv[1].read().unwrap().as_key());
+    server_write().dirty += 1;
+    c.add_reply(C_ONE.clone());
 }
 
 fn flushdb_command(c: &mut RedisClient) {
-    
+    let len = c.len();
+    c.clear();
+    server_write().dirty += len as u128;
+    c.add_reply(OK.clone());
 }
 
 fn flushall_command(c: &mut RedisClient) {
-    
+    let removed = server_write().clear();
+    server_write().dirty += removed;
+    c.add_reply(OK.clone());
+    server_read().rdb_save();
+    server_write().dirty += 1;
 }
 
 // 

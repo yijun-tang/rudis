@@ -281,6 +281,17 @@ impl RedisServer {
         log(LogLevel::Warning, "free memory if needed!!!");
     }
 
+    pub fn clear(&mut self) -> u128 {
+        let mut removed = 0u128;
+        for db in &self.dbs {
+            let mut db_w = db.write().unwrap();
+            removed += db_w.dict.len() as u128;
+            db_w.dict.clear();
+            db_w.expires.clear();
+        }
+        removed
+    }
+
     
     pub fn reset_server_save_params(&mut self) {
         self.save_params.clear();

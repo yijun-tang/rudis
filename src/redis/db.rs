@@ -8,7 +8,7 @@ pub struct RedisDB {
     pub expires: HashMap<String, u64>,                                                  // Timeout of keys with a timeout set
     pub blocking_keys: HashMap<String, Arc<LinkedList<Arc<RwLock<RedisClient>>>>>,      // Keys with clients waiting for data (BLPOP)
     io_keys: Option<HashMap<String, String>>,   // Keys with clients waiting for VM I/O
-    id: i32,
+    pub id: i32,
 }
 
 impl RedisDB {

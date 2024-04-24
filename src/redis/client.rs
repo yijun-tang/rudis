@@ -538,6 +538,12 @@ impl RedisClient {
         let db_r = db.read().unwrap();
         db_r.expires.get(key).cloned()
     }
+    pub fn clear(&self) {
+        let db = self.db.clone().expect("db doesn't exist");
+        let mut db_w = db.write().unwrap();
+        db_w.dict.clear();
+        db_w.expires.clear();
+    }
 
     /// Unblock a client that's waiting in a blocking operation such as BLPOP
     pub fn unblock_client_waiting_data(&self) {

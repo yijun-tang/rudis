@@ -14,4 +14,8 @@ impl RedisServer {
         }
         todo!()
     }
+
+    pub fn rdb_save(&self) {
+        // TODO
+    }
 }
