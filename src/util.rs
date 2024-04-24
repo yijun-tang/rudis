@@ -27,6 +27,10 @@ pub fn yes_no_to_bool(s: &str) -> Result<bool, String> {
     }
 }
 
+pub fn string_pattern_match(_pattern: &str, _key: &str) -> bool {
+    todo!()
+}
+
 #[cfg(target_os = "linux")]
 pub fn error() -> i32 {
     use libc::__errno_location;

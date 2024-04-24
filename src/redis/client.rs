@@ -408,6 +408,11 @@ impl RedisClient {
 
         reply_w.push_back(Arc::new(obj.read().unwrap().get_decoded()));
     }
+    pub fn add_reply_bulk_str(&self, s: &str) {
+        self.add_reply_str(&format!("${}\r\n", s.len()));
+        self.add_reply_str(s);
+        self.add_reply(CRLF.clone());
+    }
     pub fn add_reply_bulk(&self, obj: Arc<RwLock<RedisObject>>) {
         self.add_reply_bulk_len(obj.clone());
         self.add_reply(obj);

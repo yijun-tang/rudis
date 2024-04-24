@@ -1,6 +1,6 @@
 use std::{collections::{HashMap, HashSet, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
-use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, timestamp, LogLevel}};
+use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, string_pattern_match, timestamp, LogLevel}};
 use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, PLUS, SAME_OBJECT_ERR, SYNTAX_ERR}, server_read, server_write, skiplist::SkipList};
 
 
@@ -242,7 +242,28 @@ fn type_command(c: &mut RedisClient) {
 }
 
 fn keys_command(c: &mut RedisClient) {
-    
+    let arg_r = c.argv[1].read().unwrap();
+    let pattern = arg_r.as_key();
+    let mut keys: Vec<&str> = Vec::new();
+    if !pattern.eq("*") {
+        c.add_reply_str("-ERR only support '*' for now\r\n");
+        return;
+    }
+
+    let db = c.db.clone().unwrap();
+    let db_r = db.read().unwrap();
+    let mut iter = db_r.dict.keys();
+    while let Some(key) = iter.next() {
+        if pattern.eq("*") || string_pattern_match(pattern, key) {
+            if c.expire_if_needed(key).is_none() {
+                keys.push(key);
+            }
+        }
+    }
+    c.add_reply_str(&format!("*{}\r\n", keys.len()));
+    for key in keys {
+        c.add_reply_bulk_str(key);
+    }
 }
 
 fn randomkey_command(c: &mut RedisClient) {

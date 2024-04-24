@@ -134,6 +134,13 @@ impl RedisObject {
         }
     }
 
+    pub fn string_mut(&mut self) -> Option<&mut StringStorageType> {
+        match self {
+            Self::String { ptr } => { Some(ptr) },
+            _ => { None },
+        }
+    }
+
     pub fn is_list(&self) -> bool {
         match self {
             Self::List { l: _ } => true,
@@ -245,6 +252,17 @@ impl StringStorageType {
         match self {
             Self::String(s) => { Some(s) },
             _ => { None }
+        }
+    }
+
+    pub fn set_string(&mut self, str: &str) -> bool {
+        match self {
+            Self::String(s) => {
+                s.clear();
+                s.push_str(str);
+                true
+            },
+            _ => { false }
         }
     }
 }
