@@ -524,6 +524,20 @@ impl RedisClient {
         }
         db_r.dict.keys().cloned().nth(idx)
     }
+    pub fn set_expire(&self, key: &str, when: u64) -> bool {
+        let db = self.db.clone().expect("db doesn't exist");
+        let mut db_w = db.write().unwrap();
+        if db_w.expires.contains_key(key) {
+            return false;
+        }
+        db_w.expires.insert(key.to_string(), when);
+        true
+    }
+    pub fn get_expire(&self, key: &str) -> Option<u64>  {
+        let db = self.db.clone().expect("db doesn't exist");
+        let db_r = db.read().unwrap();
+        db_r.expires.get(key).cloned()
+    }
 
     /// Unblock a client that's waiting in a blocking operation such as BLPOP
     pub fn unblock_client_waiting_data(&self) {
@@ -573,16 +587,19 @@ impl RedisClient {
     }
     pub fn expire_if_needed(&self, key: &str) -> Option<Arc<RwLock<RedisObject>>> {
         let db = self.db.clone().expect("db doesn't exist");
-        let db_r = db.read().unwrap();
-        let when_expire = db_r.expires.get(key);
+        {
+            let db_r = db.read().unwrap();
+            let when_expire = db_r.expires.get(key);
 
-        // No expire? return ASAP
-        if db_r.expires.is_empty() || when_expire.is_none() {
-            return None;
+            // No expire? return ASAP
+            if db_r.expires.is_empty() || when_expire.is_none() {
+                return None;
+            }
+            if timestamp().as_secs() <= *when_expire.unwrap() {
+                return None;
+            }
         }
-        if timestamp().as_secs() <= *when_expire.unwrap() {
-            return None;
-        }
+        
         let mut db_w = db.write().unwrap();
         db_w.expires.remove(key);
         db_w.dict.remove(key)
@@ -619,6 +636,11 @@ impl RedisClient {
     }
     pub fn set_argv(&mut self, argv: Vec<Arc<RwLock<RedisObject>>>) {
         self.argv = argv;
+    }
+    pub fn len(&self) -> usize {
+        let db = self.db.clone().expect("db doesn't exist");
+        let db_r = db.read().unwrap();
+        db_r.dict.len()
     }
 }
 

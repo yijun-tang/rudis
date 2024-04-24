@@ -1,6 +1,6 @@
 use std::{collections::{HashMap, HashSet, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
-use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
+use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, timestamp, LogLevel}};
 use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, PLUS, SAME_OBJECT_ERR, SYNTAX_ERR}, server_read, server_write, skiplist::SkipList};
 
 
@@ -302,16 +302,52 @@ fn rename_generic_command(c: &mut RedisClient, nx: bool) {
 }
 
 fn dbsize_command(c: &mut RedisClient) {
-    
+    c.add_reply_str(&format!(":{}\r\n", c.len()));
 }
 
 fn expire_command(c: &mut RedisClient) {
+    let mut seconds = 0i64;
+    match c.argv[2].read().unwrap().as_key().parse() {
+        Ok(secs) => { seconds = secs; },
+        Err(e) => {
+            log(LogLevel::Warning, &format!("failed to parse seconds '{}': {}", c.argv[2].read().unwrap().as_key(), e));
+            return;
+        },
+    }
     
+    if !c.contains(c.argv[1].read().unwrap().as_key()) {
+        c.add_reply(C_ZERO.clone());
+        return;
+    }
+
+    if seconds < 0 {
+        if c.delete_key(c.argv[1].read().unwrap().as_key()).is_some() {
+            server_write().dirty += 1;
+        }
+        c.add_reply(C_ONE.clone());
+    } else {
+        let when = timestamp().as_secs() + seconds as u64;
+        if c.set_expire(c.argv[1].read().unwrap().as_key(), when) {
+            c.add_reply(C_ONE.clone());
+            server_write().dirty += 1;
+        } else {
+            c.add_reply(C_ZERO.clone());
+        }
+    }
 }
 
-
 fn ttl_command(c: &mut RedisClient) {
-    
+    let mut ttl = -1;
+    match c.get_expire(c.argv[1].read().unwrap().as_key()) {
+        Some(when) => {
+            let now = timestamp().as_secs();
+            if when >= now {
+                ttl = (when - now) as i32;
+            }
+        },
+        None => {},
+    }
+    c.add_reply_str(&format!(":{}\r\n", ttl));
 }
 
 fn select_command(c: &mut RedisClient) {
