@@ -1,6 +1,7 @@
 use std::{collections::{HashSet, LinkedList}, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
 use libc::close;
 use once_cell::sync::Lazy;
+use rand::Rng;
 use crate::{ae::{create_file_event, delete_file_event, el::Mask, handler::{read_query_from_client, send_reply_to_client}}, anet::{nonblock, tcp_no_delay}, redis::{cmd::lookup_command, server_read, server_write}, util::{log, timestamp, LogLevel}, zmalloc::used_memory};
 use super::{cmd::{call, MultiCmd, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType, CRLF}, RedisDB, ReplState, ONE_GB};
 
@@ -514,6 +515,15 @@ impl RedisClient {
         db_w.expires.remove(key);
         db_w.dict.remove(key)
     }
+    pub fn get_random_key(&self) -> Option<String> {
+        let db = self.db.clone().expect("db doesn't exist");
+        let db_r = db.read().unwrap();
+        let mut idx = 0;
+        if db_r.dict.len() > 1 {
+            idx = rand::thread_rng().gen_range(0..db_r.dict.len());
+        }
+        db_r.dict.keys().cloned().nth(idx)
+    }
 
     /// Unblock a client that's waiting in a blocking operation such as BLPOP
     pub fn unblock_client_waiting_data(&self) {
@@ -561,21 +571,21 @@ impl RedisClient {
         db_w.expires.remove(key);
         db_w.dict.remove(key);
     }
-    fn expire_if_needed(&self, key: &str) {
+    pub fn expire_if_needed(&self, key: &str) -> Option<Arc<RwLock<RedisObject>>> {
         let db = self.db.clone().expect("db doesn't exist");
         let db_r = db.read().unwrap();
         let when_expire = db_r.expires.get(key);
 
         // No expire? return ASAP
         if db_r.expires.is_empty() || when_expire.is_none() {
-            return;
+            return None;
         }
         if timestamp().as_secs() <= *when_expire.unwrap() {
-            return;
+            return None;
         }
         let mut db_w = db.write().unwrap();
         db_w.expires.remove(key);
-        db_w.dict.remove(key);
+        db_w.dict.remove(key)
     }
 
     pub fn has_reply(&self) -> bool {

@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
-use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, SYNTAX_ERR}, server_read, server_write, skiplist::SkipList};
+use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, PLUS, SYNTAX_ERR}, server_read, server_write, skiplist::SkipList};
 
 
 /// 
@@ -246,7 +246,25 @@ fn keys_command(c: &mut RedisClient) {
 }
 
 fn randomkey_command(c: &mut RedisClient) {
-    
+    let mut key: Option<String> = None;
+    loop {
+        key = c.get_random_key();
+        if key.is_none() || c.expire_if_needed(key.as_ref().unwrap()).is_none() {
+            break;
+        }
+    }
+
+    match key {
+        Some(k) => {
+            c.add_reply(PLUS.clone());
+            c.add_reply_str(&k);
+            c.add_reply(CRLF.clone());
+        },
+        None => {
+            c.add_reply(PLUS.clone());
+            c.add_reply(CRLF.clone());
+        },
+    }
 }
 
 fn rename_command(c: &mut RedisClient) {
