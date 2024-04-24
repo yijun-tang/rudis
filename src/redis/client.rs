@@ -615,12 +615,13 @@ impl RedisClient {
         self.reply.write().unwrap().pop_front();
     }
 
-    fn select_db(&mut self, id: i32) {
+    pub fn select_db(&mut self, id: i32) -> bool {
         if id < 0 || id >= server_read().dbnum {
             log(LogLevel::Warning, &format!("Invalid db #{} out of [0, {})", id, server_read().dbnum));
-            return;
+            return false;
         }
         self.db = Some(server_read().dbs[id as usize].clone());
+        true
     }
 
     /// reset prepare the client to process the next command

@@ -351,7 +351,20 @@ fn ttl_command(c: &mut RedisClient) {
 }
 
 fn select_command(c: &mut RedisClient) {
-    
+    let mut id = 0;
+    match c.argv[1].read().unwrap().as_key().parse() {
+        Ok(i) => { id = i; },
+        Err(e) => {
+            log(LogLevel::Warning, &format!("failed to parse DB index '{}': {}", c.argv[1].read().unwrap().as_key(), e));
+            return;
+        },
+    }
+
+    if c.select_db(id) {
+        c.add_reply(OK.clone());
+    } else {
+        c.add_reply_str("-ERR invalid DB index\r\n");
+    }
 }
 
 fn move_command(c: &mut RedisClient) {
