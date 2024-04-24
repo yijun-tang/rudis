@@ -484,10 +484,10 @@ impl RedisClient {
         let db_r = db.read().unwrap();
         db_r.blocking_keys.get(key).map(|e| e.clone())
     }
-    pub fn insert(&self, key: &str, value: Arc<RwLock<RedisObject>>) {
+    pub fn insert(&self, key: &str, value: Arc<RwLock<RedisObject>>) -> Option<Arc<RwLock<RedisObject>>> {
         let db = self.db.clone().expect("db doesn't exist");
         let mut db_w = db.write().unwrap();
-        db_w.dict.insert(key.to_string(), value);
+        db_w.dict.insert(key.to_string(), value)
     }
     pub fn remove(&self, key: &str) -> Option<Arc<RwLock<RedisObject>>> {
         let db = self.db.clone().expect("db doesn't exist");

@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, LogLevel}};
-use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, PLUS, SYNTAX_ERR}, server_read, server_write, skiplist::SkipList};
+use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, PLUS, SAME_OBJECT_ERR, SYNTAX_ERR}, server_read, server_write, skiplist::SkipList};
 
 
 /// 
@@ -268,11 +268,37 @@ fn randomkey_command(c: &mut RedisClient) {
 }
 
 fn rename_command(c: &mut RedisClient) {
-    
+    rename_generic_command(c, false);
 }
 
 fn renamenx_command(c: &mut RedisClient) {
-    
+    rename_generic_command(c, true);
+}
+
+fn rename_generic_command(c: &mut RedisClient, nx: bool) {
+    // To use the same key as src and dst is probably an error
+    if c.argv[1].read().unwrap().as_key().eq(c.argv[2].read().unwrap().as_key()) {
+        c.add_reply(SAME_OBJECT_ERR.clone());
+        return;
+    }
+
+    match c.lookup_key_write_or_reply(c.argv[1].read().unwrap().as_key(), NO_KEY_ERR.clone()) {
+        Some(obj) => {
+            c.delete_if_volatile(c.argv[2].read().unwrap().as_key());
+            if c.contains(c.argv[2].read().unwrap().as_key()) && nx {
+                c.add_reply(C_ZERO.clone());
+                return;
+            }
+            c.insert(c.argv[2].read().unwrap().as_key(), obj.clone());
+            c.remove(c.argv[1].read().unwrap().as_key());
+            server_write().dirty += 1;
+            match nx {
+                true => { c.add_reply(C_ONE.clone()); },
+                false => { c.add_reply(OK.clone()); },
+            }
+        },
+        None => {},
+    }
 }
 
 fn dbsize_command(c: &mut RedisClient) {
