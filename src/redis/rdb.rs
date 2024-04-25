@@ -1,7 +1,8 @@
-use std::{fs::{remove_file, rename, File, OpenOptions}, io::{BufWriter, Error, ErrorKind, Read, Write}, process::id, sync::{Arc, RwLock}};
+use std::{fs::{remove_file, rename, File, OpenOptions}, io::{BufWriter, Error, ErrorKind, Read, Write}, process::{exit, id}, sync::{Arc, RwLock}};
+use libc::{close, fork, pid_t, strerror};
 use lzf::compress;
 
-use crate::{redis::{server_read, server_write}, util::{log, timestamp, LogLevel}};
+use crate::{redis::{server_read, server_write}, util::{error, log, timestamp, LogLevel}};
 use super::{obj::{RedisObject, StringStorageType}, RedisServer};
 
 // Object types only used for dumping to disk
@@ -70,7 +71,7 @@ pub fn rdb_save(filename: &str) -> bool {
 
     
     let mut _writer: Option<File> = None;
-    match OpenOptions::new().write(true).open(&tmp_file) {
+    match OpenOptions::new().create(true).write(true).open(&tmp_file) {
         Ok(file) => { _writer = Some(file); },
         Err(e) => {
             log(LogLevel::Warning, &format!("Failed saving the DB: {}", e));
@@ -118,7 +119,7 @@ pub fn rdb_save(filename: &str) -> bool {
                             Err(e) => { return w_err(&e.to_string()); },
                         }
                     },
-                    None => todo!(),
+                    None => {},
                 }
 
                 // Save the key and associated value. This requires special
@@ -169,6 +170,38 @@ pub fn rdb_save(filename: &str) -> bool {
     server_write().dirty += 1;
     server_write().last_save = timestamp().as_secs();
     true
+}
+
+pub fn rdb_save_background(filename: &str) -> bool {
+    if server_read().bg_save_child_pid != -1 {
+        return false;
+    }
+
+    // TODO: vm related
+
+    unsafe {
+        let child_pid: pid_t = fork();
+        if child_pid == 0 {
+            // child
+            // TODO: vm related
+
+            close(server_read().fd);
+            if rdb_save(filename) {
+                exit(0);
+            } else {
+                exit(1);
+            }
+        } else {
+            // parent
+            if child_pid == -1 {
+                log(LogLevel::Warning, &format!("Can't save in background: fork: {}", *strerror(error())));
+                return false;
+            }
+            log(LogLevel::Notice, &format!("Background saving started by pid {}", child_pid));
+            server_write().bg_save_child_pid = child_pid;
+            return true;
+        }
+    }
 }
 
 fn rdb_save_type(buf_w: &mut BufWriter<File>, type_: u8) -> Result<(), Error> {
@@ -352,4 +385,13 @@ fn rdb_save_double_value(buf_w: &mut BufWriter<File>, val: f64) -> Result<(), Er
         buf_w.write(format!("{:.17}", val).as_bytes())?;
     }
     Ok(())
+}
+
+pub fn rdb_remove_temp_file(child_pid: pid_t) {
+    match remove_file(&format!("temp-{}.rdb", child_pid)) {
+        Ok(_) => {},
+        Err(e) => {
+            log(LogLevel::Warning, &format!("failed to delete tmp file: {}", e));
+        },
+    };
 }

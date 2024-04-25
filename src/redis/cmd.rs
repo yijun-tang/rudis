@@ -1,7 +1,8 @@
-use std::{collections::{HashMap, HashSet, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
+use std::{collections::{HashMap, HashSet, LinkedList}, fs::{remove_file, OpenOptions}, ops::{BitOr, Deref}, process::exit, sync::{Arc, RwLock}};
+use libc::{kill, SIGKILL};
 use once_cell::sync::Lazy;
-use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, string_pattern_match, timestamp, LogLevel}};
-use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, ERR, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, PLUS, SAME_OBJECT_ERR, SYNTAX_ERR}, rdb::rdb_save, server_read, server_write, skiplist::SkipList};
+use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, string_pattern_match, timestamp, LogLevel}, zmalloc::used_memory};
+use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, ERR, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, PLUS, SAME_OBJECT_ERR, SYNTAX_ERR}, rdb::{rdb_remove_temp_file, rdb_save, rdb_save_background}, server_read, server_write, skiplist::SkipList};
 
 
 /// 
@@ -1795,7 +1796,8 @@ fn save_command(c: &mut RedisClient) {
         c.add_reply_str("-ERR background save in progress\r\n");
         return;
     }
-    if rdb_save(&server_read().db_filename) {
+    let file = server_read().db_filename.clone();
+    if rdb_save(&file) {
         c.add_reply(OK.clone());
     } else {
         c.add_reply(ERR.clone());
@@ -1803,15 +1805,82 @@ fn save_command(c: &mut RedisClient) {
 }
 
 fn bgsave_command(c: &mut RedisClient) {
-    
+    if server_read().bg_save_child_pid != -1 {
+        c.add_reply_str("-ERR background save already in progress\r\n");
+        return;
+    }
+    let file = server_read().db_filename.clone();
+    if rdb_save_background(&file) {
+        c.add_reply_str("+Background saving started\r\n");
+    } else {
+        c.add_reply(ERR.clone());
+    }
 }
 
 fn lastsave_command(c: &mut RedisClient) {
-    
+    c.add_reply_str(&format!(":{}\r\n", server_read().last_save));
 }
 
 fn shutdown_command(c: &mut RedisClient) {
-    
+    log(LogLevel::Warning, "User requested shutdown, saving DB...");
+    // Kill the saving child if there is a background saving in progress.
+    // We want to avoid race conditions, for instance our saving child may
+    // overwrite the synchronous saving did by SHUTDOWN.
+    if server_read().bg_save_child_pid != -1 {
+        log(LogLevel::Warning, "There is a live saving child. Killing it!");
+        unsafe {
+            kill(server_read().bg_save_child_pid, SIGKILL);
+        }
+        rdb_remove_temp_file(server_read().bg_save_child_pid);
+    }
+    if server_read().append_only {
+        // Append only file: fsync() the AOF and exit
+        match OpenOptions::new().open(&server_read().append_filename) {
+            Ok(file) => {
+                match file.sync_all() {
+                    Ok(_) => {},
+                    Err(e) => {
+                        log(LogLevel::Warning, &format!("failed to sync aof file to disk: {}", e));
+                        return;
+                    },
+                }
+            },
+            Err(e) => {
+                log(LogLevel::Warning, &format!("failed to open aof file: {}", e));
+                return;
+            },
+        }
+
+        // TODO: vm related
+        exit(0);
+    } else {
+        // Snapshotting. Perform a SYNC SAVE and exit
+        let file = server_read().db_filename.clone();
+        if rdb_save(&file) {
+            if server_read().daemonize {
+                match remove_file(&server_read().pid_file) {
+                    Ok(_) => {},
+                    Err(e) => {
+                        log(LogLevel::Warning, &format!("failed to remove pid file: {}", e));
+                        return;
+                    },
+                }
+            }
+
+            log(LogLevel::Warning, &format!("{} bytes used at exit", used_memory()));
+            log(LogLevel::Warning, "Server exit now, bye bye...");
+            // TODO: vm related
+            exit(0);
+        } else {
+            // Ooops.. error saving! The best we can do is to continue
+            // operating. Note that if there was a background saving process,
+            // in the next cron() Redis will be notified that the background
+            // saving aborted, handling special stuff like slaves pending for
+            // synchronization...
+            log(LogLevel::Warning, "Error trying to save the DB, can't exit");
+            c.add_reply_str("-ERR can't quit, problems saving the DB\r\n");
+        }
+    }
 }
 
 fn bgrewriteaof_command(c: &mut RedisClient) {
