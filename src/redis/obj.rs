@@ -116,6 +116,16 @@ pub enum RedisObject {
     },
 }
 impl RedisObject {
+    /// type code for dumping
+    pub fn type_code(&self) -> u8 {
+        match self {
+            RedisObject::String { ptr: _ } => 0,
+            RedisObject::List { l: _ } => 1,
+            RedisObject::Set { s: _ } => 2,
+            RedisObject::ZSet { zs: _ } => 3,
+        }
+    }
+
     pub fn is_string(&self) -> bool {
         match self {
             Self::String { ptr: _ } => true,
@@ -532,6 +542,12 @@ impl ZSetStorageType {
     pub fn delete_range_by_score(&mut self, min: f64, max: f64) -> usize {
         match self {
             Self::SkipList(d, s) => s.delete_range_by_score(min, max, d)
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Self::SkipList(_, s) => s.len()
         }
     }
 }

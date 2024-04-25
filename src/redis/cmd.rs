@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet, LinkedList}, ops::{BitOr, Deref}, sync::{Arc, RwLock}};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, string_pattern_match, timestamp, LogLevel}};
-use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, PLUS, SAME_OBJECT_ERR, SYNTAX_ERR}, server_read, server_write, skiplist::SkipList};
+use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, ERR, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, PLUS, SAME_OBJECT_ERR, SYNTAX_ERR}, rdb::rdb_save, server_read, server_write, skiplist::SkipList};
 
 
 /// 
@@ -450,7 +450,7 @@ fn flushall_command(c: &mut RedisClient) {
     let removed = server_write().clear();
     server_write().dirty += removed;
     c.add_reply(OK.clone());
-    server_read().rdb_save();
+    rdb_save(&server_read().db_filename);
     server_write().dirty += 1;
 }
 
@@ -1791,7 +1791,15 @@ fn sort_command(c: &mut RedisClient) {
 }
 
 fn save_command(c: &mut RedisClient) {
-    
+    if server_read().bg_save_child_pid != -1 {
+        c.add_reply_str("-ERR background save in progress\r\n");
+        return;
+    }
+    if rdb_save(&server_read().db_filename) {
+        c.add_reply(OK.clone());
+    } else {
+        c.add_reply(ERR.clone());
+    }
 }
 
 fn bgsave_command(c: &mut RedisClient) {
