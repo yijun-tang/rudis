@@ -314,7 +314,7 @@ fn rewrite_append_only_file(filename: &str) -> bool {
                         }
                     }
                 } else {
-                    assert!(true, "impossible code");
+                    assert!(false, "impossible code");
                 }
 
                 // Save the expire time

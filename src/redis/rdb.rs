@@ -1,9 +1,8 @@
-use std::{fs::{remove_file, rename, File, OpenOptions}, io::{BufWriter, Error, ErrorKind, Read, Write}, process::{exit, id}, sync::{Arc, RwLock}};
+use std::{collections::{HashMap, HashSet, LinkedList}, fs::{remove_file, rename, File, OpenOptions}, io::{BufReader, BufWriter, Error, ErrorKind, Read, Write}, process::{exit, id}, str::from_utf8, sync::{Arc, RwLock}};
 use libc::{close, fork, pid_t, strerror};
-use lzf::compress;
-
-use crate::{redis::{server_read, server_write}, util::{error, log, timestamp, LogLevel}};
-use super::{obj::{RedisObject, StringStorageType}, RedisServer};
+use lzf::{compress, decompress};
+use crate::{redis::{db::RedisDB, server_read, server_write}, util::{error, log, timestamp, LogLevel}};
+use super::{obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType}, skiplist::SkipList};
 
 // Object types only used for dumping to disk
 static REDIS_EXPIRETIME: u8 = 253;
@@ -23,30 +22,310 @@ static REDIS_EOF: u8 = 255;
 // 
 // Lenghts up to 63 are stored using a single byte, most DB keys, and may
 // values, will fit inside.
-static REDIS_RDB_6BITLEN: u8 = 0;
-static REDIS_RDB_14BITLEN: u8 = 1;
-static REDIS_RDB_32BITLEN: u8 = 2;
-static REDIS_RDB_ENCVAL: u8 = 3;
+const REDIS_RDB_6BITLEN: u8 = 0;
+const REDIS_RDB_14BITLEN: u8 = 1;
+const REDIS_RDB_32BITLEN: u8 = 2;
+const REDIS_RDB_ENCVAL: u8 = 3;
 // When a length of a string object stored on disk has the first two bits
 // set, the remaining two bits specify a special encoding for the object
 // accordingly to the following defines:
-static REDIS_RDB_ENC_INT8: u8 = 0;      // 8 bit signed integer
-static REDIS_RDB_ENC_INT16: u8 = 1;     // 16 bit signed integer
-static REDIS_RDB_ENC_INT32: u8 = 2;     // 32 bit signed integer
-static REDIS_RDB_ENC_LZF: u8 = 3;       // string compressed with FASTLZ
+const REDIS_RDB_ENC_INT8: u8 = 0;      // 8 bit signed integer
+const REDIS_RDB_ENC_INT16: u8 = 1;     // 16 bit signed integer
+const REDIS_RDB_ENC_INT32: u8 = 2;     // 32 bit signed integer
+const REDIS_RDB_ENC_LZF: u8 = 3;       // string compressed with FASTLZ
 
 
-impl RedisServer {
-    pub fn rdb_load(&self) -> Result<(), String> {
-        let mut reader: Option<Box<dyn Read>> = None;
-        match OpenOptions::new().read(true).open(&self.db_filename) {
-            Ok(f) => {},
-            Err(e) => {
-                log(LogLevel::Warning, &format!("Fatal error: can't open the rdb file for reading: {}", e));
-                return Err(e.to_string());
-            },
+pub fn rdb_load(filename: &str) -> bool {
+    let mut _file: Option<File> = None;
+    match OpenOptions::new().read(true).open(filename) {
+        Ok(f) => { _file = Some(f); },
+        Err(e) => {
+            log(LogLevel::Warning, &format!("Fatal error: can't open the rdb file for reading: {}", e));
+            return false;
+        },
+    }
+
+    let eof_err = |err: &str| {
+        log(LogLevel::Warning, err);
+        log(LogLevel::Warning, "Short read or OOM loading DB. Unrecoverable error, aborting now.");
+        exit(1);
+    };
+
+    let mut buf_reader = BufReader::new(_file.unwrap());
+    let mut buf = [0u8; 9];
+    match buf_reader.read_exact(&mut buf) {
+        Ok(_) => {
+            if &buf[0..5] != b"REDIS" {
+                log(LogLevel::Warning, "Wrong signature trying to load DB from file");
+                return false;
+            }
+            if &buf[5..] != b"0001" {
+                log(LogLevel::Warning, &format!("Can't handle RDB format version {:?}", &buf[5..]));
+                return false;
+            }
+        },
+        Err(e) => { eof_err(&e.to_string()); },
+    }
+
+    let mut db: Option<Arc<RwLock<RedisDB>>> = None;
+    loop {
+        // Read type
+        let mut type_ = 0u8;
+        match rdb_load_type(&mut buf_reader) {
+            Ok(t) => { type_ = t; },
+            Err(e) => { eof_err(&e.to_string()); },
+        };
+
+        let mut expire_time = -1i128;
+        if type_ == REDIS_EXPIRETIME {
+            match rdb_load_time(&mut buf_reader) {
+                Ok(t) => { expire_time = t as i128; },
+                Err(e) => { eof_err(&e.to_string()); },
+            }
+            // We read the time so we need to read the object type again
+            match rdb_load_type(&mut buf_reader) {
+                Ok(t) => { type_ = t; },
+                Err(e) => { eof_err(&e.to_string()); },
+            }
+        }       
+
+        if type_ == REDIS_EOF {
+            break;
+        } 
+
+        // Handle SELECT DB opcode as a special case
+        if type_ == REDIS_SELECTDB {
+            match rdb_load_len(&mut buf_reader) {
+                Ok((db_id, _)) => {
+                    if db_id >= server_read().dbnum as u64 {
+                        log(LogLevel::Warning, &format!("FATAL: Data file was created with a Redis server configured to handle more than {} databases. Exiting\n", server_read().dbnum));
+                        exit(1);
+                    }
+                    db = Some(server_read().dbs[db_id as usize].clone());
+                    continue;
+                },
+                Err(e) => { eof_err(&e.to_string()); },
+            }
         }
-        todo!()
+
+        // Read key
+        let mut key = String::new();
+        match rdb_load_raw_string(&mut buf_reader) {
+            Ok(s) => { key = s; },
+            Err(e) => { eof_err(&e.to_string()); },
+        }
+
+        // Read value
+        let mut r_obj: Option<Arc<RwLock<RedisObject>>> = None;
+        match rdb_load_object(&mut buf_reader, type_) {
+            Ok(obj) => { r_obj = Some(obj); },
+            Err(e) => { eof_err(&e.to_string()); },
+        }
+
+        // Add the new object in the hash table
+        if db.clone().unwrap().read().unwrap().dict.contains_key(&key) {
+            log(LogLevel::Warning, &format!("Loading DB, duplicated key ({}) found! Unrecoverable error, exiting now.", &key));
+            exit(1);
+        }
+        db.clone().unwrap().write().unwrap().dict.insert(key.clone(), r_obj.unwrap().clone());
+
+        // Set the expire time if needed
+        if expire_time != -1 {
+            db.clone().unwrap().write().unwrap().expires.insert(key.clone(), expire_time as u64);
+            // Delete this key if already expired
+            if expire_time < timestamp().as_secs() as i128 {
+                db.clone().unwrap().write().unwrap().dict.remove(&key);
+                db.clone().unwrap().write().unwrap().expires.remove(&key);
+            }
+        }
+
+        // Handle swapping while loading big datasets when VM is on
+        // TODO: vm related
+    }
+    true
+}
+
+/// Load a Redis object of the specified type from the specified file.
+/// On success a newly allocated object is returned, otherwise NULL.
+fn rdb_load_object(buf_r: &mut BufReader<File>, type_code: u8) -> Result<Arc<RwLock<RedisObject>>, Error> {
+    if type_code == 0 {
+        // String
+        let obj = rdb_load_string_object(buf_r)?;
+        Ok(try_object_encoding(Arc::new(RwLock::new(obj))))
+    } else if type_code == 1 {
+        // List
+        let (len, _) = rdb_load_len(buf_r)?;
+        let mut list = LinkedList::new();
+        for _ in 0..len {
+            let s_obj = rdb_load_string_object(buf_r)?;
+            list.push_back(s_obj);
+        }
+        Ok(Arc::new(RwLock::new(RedisObject::List { l: ListStorageType::LinkedList(list) })))
+    } else if type_code == 2 {
+        // Set
+        let (len, _) = rdb_load_len(buf_r)?;
+        let mut set = HashSet::with_capacity(len as usize);
+        for _ in 0..len {
+            let s_obj = rdb_load_string_object(buf_r)?;
+            set.insert(s_obj);
+        }
+        Ok(Arc::new(RwLock::new(RedisObject::Set { s: SetStorageType::HashSet(set) })))
+    } else if type_code == 3 {
+        // ZSet
+        let (len, _) = rdb_load_len(buf_r)?;
+        let mut dict = HashMap::with_capacity(len as usize);
+        let mut zsl = SkipList::new();
+        for _ in 0..len {
+            let s_obj = rdb_load_string_object(buf_r)?;
+            let score = rdb_load_f64(buf_r)?;
+            dict.insert(s_obj.clone(), score);
+            zsl.insert(score, Arc::new(s_obj));
+        }
+        Ok(Arc::new(RwLock::new(RedisObject::ZSet { zs: ZSetStorageType::SkipList(dict, zsl) })))
+    } else {
+        Err(Error::new(ErrorKind::Other, "unsupported type"))
+    }
+}
+
+/// For information about f64 serialization check rdb_save_f64()
+fn rdb_load_f64(buf_r: &mut BufReader<File>) -> Result<f64, Error> {
+    let mut buf = [0u8; 1];
+    buf_r.read_exact(&mut buf)?;
+    match buf[0] {
+        255 => { Ok(f64::NEG_INFINITY) },
+        254 => { Ok(f64::INFINITY) },
+        253 => { Ok(f64::NAN) },
+        _ => {
+            let mut buf_v: Vec<u8> = Vec::with_capacity(buf[0] as usize);
+            for _ in 0..buf[0] { buf_v.push(0); }
+            buf_r.read_exact(&mut buf_v)?;
+            match from_utf8(&buf_v) {
+                Ok(s) => {
+                    match s.parse() {
+                        Ok(f) => {
+                            let val: f64 = f;
+                            Ok(val)
+                        },
+                        Err(e) => { Err(Error::new(ErrorKind::Other, e.to_string())) },
+                    }
+                },
+                Err(e) => { Err(Error::new(ErrorKind::Other, e.to_string())) },
+            }
+        },
+    }
+}
+
+fn rdb_load_type(buf_r: &mut BufReader<File>) -> Result<u8, Error> {
+    let mut buf = [0u8; 1];
+    buf_r.read_exact(&mut buf)?;
+    Ok(buf[0])
+}
+
+fn rdb_load_time(buf_r: &mut BufReader<File>) -> Result<u64, Error> {
+    let mut buf = [0u8; 4];
+    buf_r.read_exact(&mut buf)?;
+    Ok(i32::from_ne_bytes(buf) as u64)
+}
+
+/// Load an encoded length from the DB, see the REDIS_RDB_* defines on the top
+/// of this file for a description of how this are stored on disk.
+/// 
+/// is_encoded is set to 1 if the readed length is not actually a length but
+/// an "encoding type", check the above comments for more info
+fn rdb_load_len(buf_r: &mut BufReader<File>) -> Result<(u64, bool), Error> {
+    let mut is_encoded = false;
+    let mut buf = [0u8; 1];
+    buf_r.read_exact(&mut buf)?;
+    let type_ = buf[0] >> 6;
+    match type_ {
+        REDIS_RDB_6BITLEN => {
+            return Ok(((buf[0] & 0x3F) as u64, is_encoded));
+        },
+        REDIS_RDB_ENCVAL => {
+            is_encoded = true;
+            return Ok(((buf[0] & 0x3F) as u64, is_encoded));
+        },
+        REDIS_RDB_14BITLEN => {
+            let mut l_buf = [0u8; 1];
+            buf_r.read_exact(&mut l_buf)?;
+            let len = (((buf[0] & 0x3F) as u16) << 8) | (l_buf[0] as u16);
+            return Ok((len as u64, is_encoded));
+        },
+        _ => {
+            let mut l_buf = [0u8; 4];
+            buf_r.read_exact(&mut l_buf)?;
+            let len = u32::from_be_bytes(l_buf);
+            return Ok((len as u64, is_encoded));
+        },
+    }
+}
+
+fn rdb_load_string_object(buf_r: &mut BufReader<File>) -> Result<RedisObject, Error> {
+    let s = rdb_load_raw_string(buf_r)?;
+    Ok(RedisObject::String { ptr: StringStorageType::String(s) })
+}
+
+fn rdb_load_raw_string(buf_r: &mut BufReader<File>) -> Result<String, Error> {
+    let (len, is_encoded) = rdb_load_len(buf_r)?;
+    if is_encoded {
+        match len as u8 {
+            REDIS_RDB_ENC_INT8 | REDIS_RDB_ENC_INT16 | REDIS_RDB_ENC_INT32 => {
+                return rdb_load_integer(buf_r, len as u8);
+            },
+            REDIS_RDB_ENC_LZF => {
+                return rdb_load_lzf_raw_string(buf_r);
+            },
+            _ => { assert!(false, "impossible code"); },
+        }
+    }
+    
+    let mut buf: Vec<u8> = Vec::with_capacity(len as usize);
+    for _ in 0..len { buf.push(0); }
+    buf_r.read_exact(&mut buf)?;
+    match from_utf8(&buf) {
+        Ok(s) => { Ok(s.to_string()) },
+        Err(e) => { Err(Error::new(ErrorKind::Other, e.to_string())) },
+    }
+}
+
+fn rdb_load_integer(buf_r: &mut BufReader<File>, enc_type: u8) -> Result<String, Error> {
+    let mut val = 0u32;
+    match enc_type {
+        REDIS_RDB_ENC_INT8 => {
+            let mut buf = [0u8; 1];
+            buf_r.read_exact(&mut buf)?;
+            val = buf[0] as u32;
+        },
+        REDIS_RDB_ENC_INT16 => {
+            let mut buf = [0u8; 2];
+            buf_r.read_exact(&mut buf)?;
+            let n = buf[0] as u16 | ((buf[1] as u16) << 8);
+            val = n as u32;
+        },
+        REDIS_RDB_ENC_INT32 => {
+            let mut buf = [0u8; 4];
+            buf_r.read_exact(&mut buf)?;
+            val = buf[0] as u32 | ((buf[1] as u32) << 8) | ((buf[2] as u32) << 16) | ((buf[3] as u32) << 24);
+        },
+        _ => { assert!(false, "impossible code"); },
+    }
+    Ok(val.to_string())
+}
+
+fn rdb_load_lzf_raw_string(buf_r: &mut BufReader<File>) -> Result<String, Error> {
+    let (clen, _) = rdb_load_len(buf_r)?;
+    let (len, _) = rdb_load_len(buf_r)?;
+    let mut buf: Vec<u8> = Vec::with_capacity(clen as usize);
+    for _ in 0..clen { buf.push(0); }
+    buf_r.read_exact(&mut buf)?;
+    match decompress(&buf, len as usize) {
+        Ok(d) => {
+            match from_utf8(&d) {
+                Ok(s) => { Ok(s.to_string()) },
+                Err(e) => { Err(Error::new(ErrorKind::Other, e.to_string())) },
+            }
+        },
+        Err(e) => { Err(Error::new(ErrorKind::Other, e.to_string())) },
     }
 }
 
@@ -349,10 +628,10 @@ fn rdb_save_object(buf_w: &mut BufWriter<File>, obj: Arc<RwLock<RedisObject>>) -
         let mut iter = zset.dict().iter();
         while let Some(ele) = iter.next() {
             rdb_save_string_object(buf_w, ele.0.string().unwrap())?;
-            rdb_save_double_value(buf_w, *ele.1)?;
+            rdb_save_f64(buf_w, *ele.1)?;
         }
     } else {
-        assert!(true, "impossible code");
+        assert!(false, "impossible code");
     }
     Ok(())
 }
@@ -372,7 +651,7 @@ fn rdb_save_string_object(buf_w: &mut BufWriter<File>, s_storage: &StringStorage
 /// 253: not a number
 /// 254: + inf
 /// 255: - inf
-fn rdb_save_double_value(buf_w: &mut BufWriter<File>, val: f64) -> Result<(), Error> {
+fn rdb_save_f64(buf_w: &mut BufWriter<File>, val: f64) -> Result<(), Error> {
     if val.is_nan() {
         buf_w.write(&[253u8])?;
     } else if val.is_infinite() {
@@ -382,7 +661,9 @@ fn rdb_save_double_value(buf_w: &mut BufWriter<File>, val: f64) -> Result<(), Er
             buf_w.write(&[255u8])?;
         }
     } else {
-        buf_w.write(format!("{:.17}", val).as_bytes())?;
+        let str = format!("{:.17}", val);
+        buf_w.write(&[str.len() as u8])?;
+        buf_w.write(str.as_bytes())?;
     }
     Ok(())
 }
@@ -394,4 +675,30 @@ pub fn rdb_remove_temp_file(child_pid: pid_t) {
             log(LogLevel::Warning, &format!("failed to delete tmp file: {}", e));
         },
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::from_utf8;
+
+
+    #[test]
+    fn test() {
+        println!("sjjfisjifjsijfisji");
+        let s = format!("{:.17}", 100f64);
+        let bs = s.as_bytes();
+        println!("{}:{:?}",bs.len(), bs);
+        match from_utf8(bs) {
+            Ok(str) => {
+                match str.parse() {
+                    Ok(i) => {
+                        let f: f64 = i;
+                        println!("f: {}", f);
+                    },
+                    Err(_) => todo!(),
+                }
+            },
+            Err(_) => todo!(),
+        }
+    }
 }

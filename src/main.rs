@@ -1,9 +1,9 @@
 use rredis::{
     ae::{ae_main, el::set_before_sleep_proc, handler::before_sleep},
-    redis::{print_logo, server_read, server_write},
+    redis::{print_logo, rdb::rdb_load, server_read, server_write},
     util::{log, LogLevel},
 };
-use std::{env, process::exit, sync::Arc};
+use std::{env, process::exit, sync::Arc, time::Instant};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -27,16 +27,17 @@ fn main() {
     #[cfg(target_os = "linux")]
     server_read().linux_overcommit_memory_warning();
 
-    /* let start = Instant::now();
+    let start = Instant::now();
     if server_read().append_only() {
         if let Ok(_) = server_read().load_append_only_file() {
-            server_read().log(LogLevel::Notice, &format!("DB loaded from append only file: {} seconds", start.elapsed().as_secs()));
+            log(LogLevel::Notice, &format!("DB loaded from append only file: {} seconds", start.elapsed().as_secs()));
         }
     } else {
-        if let Ok(_) = server_read().rdb_load() {
-            server_read().log(LogLevel::Notice, &format!("DB loaded from disk: {} seconds", start.elapsed().as_secs()));
+        let file = server_read().db_filename().to_string();
+        if rdb_load(&file) {
+            log(LogLevel::Notice, &format!("DB loaded from disk: {} seconds", start.elapsed().as_secs()));
         }
-    } */
+    }
 
     log(
         LogLevel::Notice,

@@ -600,18 +600,18 @@ pub fn try_object_encoding(obj: Arc<RwLock<RedisObject>>) -> Arc<RwLock<RedisObj
 /// If so, the function returns encoded integer of the string s. 
 /// Otherwise error string is returned.
 fn is_string_representable_as_int(s: &str) -> Result<isize, String> {
-    let mut i = 0isize;
+    let mut _i = 0isize;
     match s.parse() {
-        Ok(v) => { i = v; },
+        Ok(v) => { _i = v; },
         Err(e) => { return Err(e.to_string()); },
     }
 
     // If the number converted back into a string is not identical
     // then it's not possible to encode the string as integer
-    if !i.to_string().eq(s) {
+    if !_i.to_string().eq(s) {
         return Err("failed to encode".to_string());
     }
-    Ok(i)
+    Ok(_i)
 }
 
 /// Compare two string objects via strcmp() or alike.
@@ -640,11 +640,11 @@ pub fn eq_string_objects(obj1: &RedisObject, obj2: &Arc<RwLock<RedisObject>>) ->
 pub fn compare_string_objects(obj1: &RedisObject, obj2: &RedisObject) -> Ordering {
     match obj1 {
         RedisObject::String { ptr: _ } => {},
-        _ => { assert!(true, "impossible code"); }
+        _ => { assert!(false, "impossible code"); }
     }
     match obj2.string() {
         Some(_) => {},
-        None => { assert!(true, "impossible code"); }
+        None => { assert!(false, "impossible code"); }
     }
     obj1.get_decoded().string().unwrap().string().unwrap()
         .cmp(obj2.get_decoded().string().unwrap().string().unwrap())

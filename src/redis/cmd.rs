@@ -1092,7 +1092,7 @@ fn sadd_command(c: &mut RedisClient) {
                 c.add_reply(C_ZERO.clone());
             }
         },
-        None => { assert!(true, "impossible code"); },
+        None => { assert!(false, "impossible code"); },
     }
 }
 
@@ -1182,7 +1182,7 @@ fn smove_command(c: &mut RedisClient) {
                         Some(ds_storage) => {
                             ds_storage.insert(c.argv[3].clone());
                         },
-                        None => { assert!(true, "impossible code"); }
+                        None => { assert!(false, "impossible code"); }
                     }
                     server_write().dirty += 1;
                     c.add_reply(C_ONE.clone());
