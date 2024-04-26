@@ -2,7 +2,7 @@ use std::{collections::{HashMap, HashSet, LinkedList}, fs::{remove_file, OpenOpt
 use libc::{kill, SIGKILL};
 use once_cell::sync::Lazy;
 use crate::{redis::obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, util::{log, string_pattern_match, timestamp, LogLevel}, zmalloc::used_memory};
-use super::{client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, ERR, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, PLUS, SAME_OBJECT_ERR, SYNTAX_ERR}, rdb::{rdb_remove_temp_file, rdb_save, rdb_save_background}, server_read, server_write, skiplist::SkipList};
+use super::{aof::rewrite_append_only_file_background, client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, ERR, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, PLUS, SAME_OBJECT_ERR, SYNTAX_ERR}, rdb::{rdb_remove_temp_file, rdb_save, rdb_save_background}, server_read, server_write, skiplist::SkipList};
 
 
 /// 
@@ -1884,7 +1884,15 @@ fn shutdown_command(c: &mut RedisClient) {
 }
 
 fn bgrewriteaof_command(c: &mut RedisClient) {
-    
+    if server_read().bg_rewrite_child_pid != -1 {
+        c.add_reply_str("-ERR background append only file rewriting already in progress\r\n");
+        return;
+    }
+    if rewrite_append_only_file_background() {
+        c.add_reply_str("+Background append only file rewriting started\r\n");
+    } else {
+        c.add_reply(ERR.clone());
+    }
 }
 
 fn info_command(c: &mut RedisClient) {
