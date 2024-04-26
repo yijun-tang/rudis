@@ -76,7 +76,7 @@ impl RedisServer {
                     "bind" if argc == 2 => { self.bind_addr = argv[1].to_string(); },
                     "save" if argc == 3 => {
                         let mut err = String::new();
-                        let s: Result<u128, _> = argv[1].parse();
+                        let s: Result<u64, _> = argv[1].parse();
                         let c: Result<i32, _> = argv[2].parse();
                         match (s, c) {
                             (Ok(seconds), Ok(changes)) => {

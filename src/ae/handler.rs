@@ -1,6 +1,6 @@
 use std::{any::Any, borrow::Borrow, collections::LinkedList, net::Ipv4Addr, sync::{Arc, RwLock}};
 use libc::{c_void, close, read, strerror, write, EAGAIN};
-use crate::{anet::accept, redis::{client::{clients_read, clients_write, deleled_clients_read, deleted_clients_write, RedisClient}, obj::{RedisObject, StringStorageType}, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
+use crate::{anet::accept, redis::{client::{clients_read, clients_write, deleled_clients_read, deleted_clients_write, RedisClient}, obj::{RedisObject, StringStorageType}, rdb::rdb_save_background, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
 use super::{delete_file_event, Mask};
 
 static MAX_WRITE_PER_EVENT: usize = 1024 * 64;
@@ -78,6 +78,38 @@ pub fn server_cron(id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) ->
             used_memory(),
             server.sharing_pool().len()));
     }
+
+    // Close connections of timedout clients
+
+    // Check if a background saving or AOF rewrite in progress terminated
+    if server_read().bg_save_child_pid() != -1 || server_read().bg_rewrite_child_pid() != -1 {
+
+    } else {
+        // If there is not a background saving in progress check if
+        // we have to save now
+        let now = timestamp().as_secs();
+        let dirty = server_read().dirty();
+        let last_save = server_read().last_save();
+        let filename = server_read().db_filename().to_string();
+        for save_param in server_read().save_params() {
+            if dirty >= save_param.changes() as u128 &&
+                (now as i128 - last_save as i128) > save_param.seconds() as i128 {
+                log(LogLevel::Warning, &format!("{} changes in {} seconds. Saving...", save_param.changes(), save_param.seconds()));
+                rdb_save_background(&filename);
+                break;
+            }
+        }
+    }
+
+    // Try to expire a few timed out keys. The algorithm used is adaptive and
+    // will use few CPU cycles if there are few expiring keys, otherwise
+    // it will get more aggressive to avoid that too much memory is used by
+    // keys that can be removed from the keyspace.
+
+    // Swap a few keys on disk if we are over the memory limit and VM
+    // is enbled. Try to free objects from the free list first.
+
+    // Check if we should connect to a MASTER
 
     1000
 }

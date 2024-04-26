@@ -296,10 +296,19 @@ impl RedisServer {
     pub fn reset_server_save_params(&mut self) {
         self.save_params.clear();
     }
-    fn append_server_save_params(&mut self, seconds: u128, changes: i32) {
+    fn append_server_save_params(&mut self, seconds: u64, changes: i32) {
         self.save_params.push(SaveParam { seconds, changes });
     }
+    pub fn save_params(&self) -> &Vec<SaveParam> {
+        &self.save_params
+    }
 
+    pub fn dirty(&self) -> u128 {
+        self.dirty
+    }
+    pub fn last_save(&self) -> u64 {
+        self.last_save
+    }
     pub fn log_file(&self) -> &str {
         &self.log_file
     }
@@ -326,6 +335,9 @@ impl RedisServer {
     }
     pub fn bg_save_child_pid(&self) -> i32 {
         self.bg_save_child_pid
+    }
+    pub fn bg_rewrite_child_pid(&self) -> i32 {
+        self.bg_rewrite_child_pid
     }
     pub fn io_ready_clients(&self) -> &LinkedList<Arc<RwLock<RedisClient>>> {
         &self.io_ready_clients
@@ -416,9 +428,17 @@ enum ReplState {
 }
 
 
-struct SaveParam {
-    seconds: u128,
+pub struct SaveParam {
+    seconds: u64,
     changes: i32,
+}
+impl SaveParam {
+    pub fn seconds(&self) -> u64 {
+        self.seconds
+    }
+    pub fn changes(&self) -> i32 {
+        self.changes
+    }
 }
 
 
