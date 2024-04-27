@@ -5,7 +5,4 @@ pub mod ae;
 pub mod anet;
 pub mod redis;
 pub mod zmalloc;
-pub mod lzf;
-pub mod pqsort;
-pub mod zipmap;
 pub mod util;
