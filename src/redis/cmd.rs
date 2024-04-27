@@ -1835,7 +1835,7 @@ fn shutdown_command(c: &mut RedisClient) {
     }
     if server_read().append_only {
         // Append only file: fsync() the AOF and exit
-        match OpenOptions::new().open(&server_read().append_filename) {
+        match OpenOptions::new().append(true).open(&server_read().append_filename) {
             Ok(file) => {
                 match file.sync_all() {
                     Ok(_) => {},

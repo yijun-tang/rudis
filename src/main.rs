@@ -1,6 +1,6 @@
 use rredis::{
     ae::{ae_main, el::set_before_sleep_proc, handler::before_sleep},
-    redis::{print_logo, rdb::rdb_load, server_read, server_write},
+    redis::{aof::load_append_only_file, print_logo, rdb::rdb_load, server_read, server_write},
     util::{log, LogLevel},
 };
 use std::{env, process::exit, sync::Arc, time::Instant};
@@ -29,7 +29,8 @@ fn main() {
 
     let start = Instant::now();
     if server_read().append_only() {
-        if let Ok(_) = server_read().load_append_only_file() {
+        let filename = { server_read().append_filename().to_string() };
+        if let Ok(_) = load_append_only_file(&filename) {
             log(LogLevel::Notice, &format!("DB loaded from append only file: {} seconds", start.elapsed().as_secs()));
         }
     } else {

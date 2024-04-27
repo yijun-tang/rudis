@@ -665,9 +665,11 @@ impl Drop for RedisClient {
         // this, because this call adds the READABLE event.
         // TODO: blocked
 
-        delete_file_event(self.fd, Mask::Readable);
-        delete_file_event(self.fd, Mask::Writable);
-        unsafe { close(self.fd); }
+        if self.fd != -1 {
+            delete_file_event(self.fd, Mask::Readable);
+            delete_file_event(self.fd, Mask::Writable);
+            unsafe { close(self.fd); }
+        }
 
         // Remove from the list of clients waiting for swapped keys
         // TODO
