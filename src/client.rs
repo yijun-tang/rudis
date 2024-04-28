@@ -52,8 +52,6 @@ pub struct RedisClient {
     mstate: MultiState,             // MULTI/EXEC state
     blocking_keys: RwLock<Vec<Arc<RedisObject>>>,   // The key we are waiting to terminate a blocking
                                             // operation such as BLPOP. Otherwise NULL.
-    io_keys: LinkedList<Arc<RedisObject>>,  // Keys this client is waiting to be loaded from the
-                                            // swap file in order to continue.
 }
 
 impl RedisClient {
@@ -82,7 +80,6 @@ impl RedisClient {
             reply: RwLock::new(LinkedList::new()),
             blocking_keys: RwLock::new(Vec::new()),
             mstate: MultiState { commands: Vec::new() },
-            io_keys: LinkedList::new(),
         };
         c.select_db(0);
         let c = Arc::new(RwLock::new(c));
@@ -112,7 +109,6 @@ impl RedisClient {
             authenticated: false,
             mstate: MultiState { commands: Vec::new() },
             blocking_keys: RwLock::new(Vec::new()),
-            io_keys: LinkedList::new(),
         };
 
         c.select_db(0);

@@ -1,6 +1,6 @@
 //! Basic TCP socket stuff made a bit less boring.
 
-use std::{mem::{size_of, size_of_val, zeroed}, net::{IpAddr, Ipv4Addr}};
+use std::{mem::{size_of, size_of_val, zeroed}, net::Ipv4Addr};
 use libc::{bind, c_void, close, fcntl, listen, setsockopt, sockaddr, sockaddr_in, socket, strerror, AF_INET, EINTR, F_GETFL, F_SETFL, INADDR_ANY, IPPROTO_TCP, O_NONBLOCK, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR, TCP_NODELAY};
 use crate::util::error;
 
@@ -107,24 +107,3 @@ pub fn tcp_no_delay(fd: i32) -> Result<(), String> {
     }
     Ok(())
 }
-
-pub fn tcp_connect(addr: &str, port: u16) -> Result<(), &'static str> {
-    todo!()
-}
-
-pub fn tcp_nonblock_connect(addr: &str, port: u16) -> Result<(), &'static str> {
-    todo!()
-}
-
-pub fn read(fd: i32, buf: &mut Vec<u8>, count: i32) -> i32 {
-    todo!()
-}
-
-pub fn write(fd: i32, buf: &mut Vec<u8>, count: i32) -> i32 {
-    todo!()
-}
-
-pub fn resolve(host: &str, ip: &mut IpAddr) -> Result<(), &'static str> {
-    todo!()
-}
-

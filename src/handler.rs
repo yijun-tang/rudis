@@ -226,7 +226,6 @@ pub fn send_reply_to_client(fd: i32, mask: Mask) {
         client.sent_len = 0;
         delete_file_event(client.fd(), Mask::Writable);
     }
-    // log(LogLevel::Verbose, "send_reply_to_client left");
 }
 
 

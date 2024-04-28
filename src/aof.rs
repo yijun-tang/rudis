@@ -1,6 +1,6 @@
 use std::{fs::{remove_file, rename, File, OpenOptions}, io::{BufRead, BufReader, BufWriter, Error, ErrorKind, Read, Write}, process::{exit, id}, sync::{Arc, RwLock}};
 use libc::{close, fork, strerror};
-use crate::{client::RedisClient, server::{server_read, server_write}, util::{error, log, timestamp, LogLevel}, zmalloc::MemCounter};
+use crate::{client::RedisClient, server::{server_read, server_write}, util::{error, log, timestamp, LogLevel}};
 use super::{cmd::lookup_command, obj::{try_object_encoding, try_object_sharing, RedisObject, StringStorageType}};
 
 /// Replay the append log file. On error REDIS_OK is returned. On non fatal
@@ -39,7 +39,6 @@ pub fn load_append_only_file(filename: &str) -> Result<(), String> {
         exit(1);
     };
 
-    let mut loaded_keys = 0u128;
     let mut iter = BufReader::new(_reader.unwrap()).lines();
     let mut fake_client = Box::new(RedisClient::create_fake_client());
     loop {
@@ -174,9 +173,9 @@ fn rewrite_append_only_file(filename: &str) -> bool {
     // Note that we have to use a different temp name here compared to the
     // one used by rewriteAppendOnlyFileBackground() function.
     let tmp_file = format!("temp-rewriteaof-{}.aof", id());
-    let mut file: Option<File> = None;
+    let mut _file: Option<File> = None;
     match OpenOptions::new().create(true).write(true).open(&tmp_file) {
-        Ok(f) => { file = Some(f); },
+        Ok(f) => { _file = Some(f); },
         Err(e) => {
             log(LogLevel::Warning, &format!("Failed rewriting the append only file: {}", e));
             return false;
@@ -196,7 +195,7 @@ fn rewrite_append_only_file(filename: &str) -> bool {
     let select_cmd = "*2\r\n$6\r\nSELECT\r\n";
 
     {
-        let mut buf_writer = BufWriter::new(file.unwrap());
+        let mut buf_writer = BufWriter::new(_file.unwrap());
         for i in 0..server_read().dbs.len() {
             if server_read().dbs[i].read().unwrap().dict.is_empty() {
                 continue;

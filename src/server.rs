@@ -1,4 +1,4 @@
-use std::{any::Any, collections::{HashMap, LinkedList}, env::set_current_dir, fs::{File, OpenOptions}, io::{self, BufRead, BufReader, Read, Write}, process::{exit, id}, ptr::null_mut, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
+use std::{collections::{HashMap, LinkedList}, env::set_current_dir, fs::{File, OpenOptions}, io::{self, BufRead, BufReader, Read, Write}, process::{exit, id}, ptr::null_mut, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
 use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, open, pid_t, setsid, signal, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use once_cell::sync::Lazy;
 use crate::{client::RedisClient, eventloop::{create_file_event, create_time_event, Mask}, handler::{accept_handler, server_cron}, net::tcp_server, obj::RedisObject, util::{log, oom, timestamp, yes_no_to_bool, LogLevel}};
@@ -40,7 +40,6 @@ pub struct RedisServer {
     slaves: LinkedList<Arc<RwLock<RedisClient>>>,
     monitors: LinkedList<RedisClient>,
     cron_loops: i32,                                            // number of times the cron function run
-    obj_free_list: LinkedList<Arc<dyn Any + Sync + Send>>,      // A list of freed objects to avoid malloc()
     pub last_save: u64,                                             // Unix time of last save succeeded (in seconds)
     // Fields used only for stats
     stat_starttime: u64,                        // server start time (in seconds)
@@ -105,7 +104,6 @@ impl RedisServer {
             slaves: LinkedList::new(),
             monitors: LinkedList::new(),
             cron_loops: 0,
-            obj_free_list: LinkedList::new(),
             last_save: timestamp().as_secs(),
             stat_starttime: timestamp().as_secs(),
             stat_numcommands: 0,
