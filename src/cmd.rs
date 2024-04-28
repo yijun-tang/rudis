@@ -80,7 +80,7 @@ static CMD_TABLE: Lazy<HashMap<&str, Arc<RedisCommand>>> = Lazy::new(|| {
         ("zcard", Arc::new(RedisCommand { name: "zcard", proc: Arc::new(zcard_command), arity: 2, flags: CmdFlags::inline()})),
         ("zscore", Arc::new(RedisCommand { name: "zscore", proc: Arc::new(zscore_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom()})),
         ("zremrangebyscore", Arc::new(RedisCommand { name: "zremrangebyscore", proc: Arc::new(zremrangebyscore_command), arity: 4, flags: CmdFlags::inline()})),
-        ("sort", Arc::new(RedisCommand { name: "sort", proc: Arc::new(sort_command), arity: -2, flags: CmdFlags::inline() | CmdFlags::deny_oom()})),
+        
         ("save", Arc::new(RedisCommand { name: "save", proc: Arc::new(save_command), arity: 1, flags: CmdFlags::inline()})),
         ("bgsave", Arc::new(RedisCommand { name: "bgsave", proc: Arc::new(bgsave_command), arity: 1, flags: CmdFlags::inline()})),
         ("lastsave", Arc::new(RedisCommand { name: "lastsave", proc: Arc::new(lastsave_command), arity: 1, flags: CmdFlags::inline()})),
@@ -1771,10 +1771,6 @@ fn zremrangebyscore_command(c: &mut RedisClient) {
         },
         None => {},
     }
-}
-
-fn sort_command(c: &mut RedisClient) {
-    
 }
 
 fn save_command(c: &mut RedisClient) {
