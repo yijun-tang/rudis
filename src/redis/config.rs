@@ -213,37 +213,6 @@ impl RedisServer {
                     "requirepass" if argc == 2 => { self.require_pass = argv[1].to_string(); },
                     "pidfile" if argc == 2 => { self.pid_file = argv[1].to_string(); },
                     "dbfilename" if argc == 2 => { self.db_filename = argv[1].to_string(); },
-                    "vm-enabled" if argc == 2 => {
-                        match yes_no_to_bool(argv[1]) {
-                            Ok(b) => { self.vm_enabled = b; },
-                            Err(e) => { load_err(&e, trimed_line, line_num); },
-                        }
-                    },
-                    "vm-swap-file" if argc == 2 => { self.vm_swap_file = argv[1].to_string(); },
-                    "vm-max-memory" if argc == 2 => {
-                        match argv[1].parse() {
-                            Ok(m_m) => { self.vm_max_memory = m_m; },
-                            Err(e) => { load_err(&e.to_string(), trimed_line, line_num); },
-                        }
-                    },
-                    "vm-page-size" if argc == 2 => {
-                        match argv[1].parse() {
-                            Ok(p_s) => { self.vm_page_size = p_s; },
-                            Err(e) => { load_err(&e.to_string(), trimed_line, line_num); },
-                        }
-                    },
-                    "vm-pages" if argc == 2 => {
-                        match argv[1].parse() {
-                            Ok(p) => { self.vm_pages = p; },
-                            Err(e) => { load_err(&e.to_string(), trimed_line, line_num); },
-                        }
-                    },
-                    "vm-max-threads" if argc == 2 => {
-                        match argv[1].parse() {
-                            Ok(m_t) => { self.vm_max_threads = m_t; },
-                            Err(e) => { load_err(&e.to_string(), trimed_line, line_num); },
-                        }
-                    },
                     "hash-max-zipmap-entries" if argc == 2 => {
                         match argv[1].parse() {
                             Ok(mz_e) => { self.hash_max_zipmap_entries = mz_e; },

@@ -109,17 +109,6 @@ pub fn load_append_only_file(filename: &str) -> Result<(), String> {
                     // Discard the reply objects list from the fake client
 
                     // Clean up, ready for the next command
-
-
-                    // Handle swapping while loading big datasets when VM is on
-                    loaded_keys += 1;
-                    if server_read().vm_enabled && (loaded_keys % 5000) == 0 {
-                        while MemCounter::used_memory() as u128 > server_read().vm_max_memory {
-                            if server_read().swap_one_object_blocking().is_err() {
-                                break;
-                            }
-                        }
-                    }
                 },
                 Err(e) => {
                     read_err(&e.to_string());
@@ -148,14 +137,10 @@ pub fn rewrite_append_only_file_background() -> bool {
         return false;
     }
 
-    // TODO: vm related
-
     unsafe {
         let child_pid = fork();
         if child_pid == 0 {
             // child
-            // TODO: vm related
-
             close(server_read().fd);
             let tmp_file = format!("temp-rewriteaof-bg-{}.aof", id());
             if rewrite_append_only_file(&tmp_file) {
@@ -230,12 +215,6 @@ fn rewrite_append_only_file(filename: &str) -> bool {
 
             // Iterate this DB writing every entry
             while let Some(entry) = iter.next() {
-                // If the value for this key is swapped, load a preview in memory.
-                // We use a "swapped" flag to remember if we need to free the
-                // value object instead to just increment the ref count anyway
-                // in order to avoid copy-on-write of pages if we are forked()
-                // TODO: vm related
-
                 // Save the key and associated value
                 if entry.1.read().unwrap().is_string() {
                     // Emit a SET command
@@ -336,8 +315,6 @@ fn rewrite_append_only_file(filename: &str) -> bool {
                     },
                     None => {},
                 }
-
-                // TODO: vm related   
             }
         }
 

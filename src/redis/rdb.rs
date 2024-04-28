@@ -1,8 +1,8 @@
 use std::{collections::{HashMap, HashSet, LinkedList}, fs::{remove_file, rename, File, OpenOptions}, io::{BufReader, BufWriter, Error, ErrorKind, Read, Write}, process::{exit, id}, str::from_utf8, sync::{Arc, RwLock}};
 use libc::{close, fork, pid_t, strerror};
 use lzf::{compress, decompress};
-use crate::{redis::{db::RedisDB, server_read, server_write}, util::{error, log, timestamp, LogLevel}};
-use super::{obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType}, skiplist::SkipList};
+use crate::{redis::{server_read, server_write}, util::{error, log, timestamp, LogLevel}};
+use super::{obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType}, skiplist::SkipList, RedisDB};
 
 // Object types only used for dumping to disk
 static REDIS_EXPIRETIME: u8 = 253;
@@ -138,9 +138,6 @@ pub fn rdb_load(filename: &str) -> bool {
                 db.clone().unwrap().write().unwrap().expires.remove(&key);
             }
         }
-
-        // Handle swapping while loading big datasets when VM is on
-        // TODO: vm related
     }
     true
 }
@@ -342,12 +339,6 @@ pub fn rdb_save(filename: &str) -> bool {
         log(LogLevel::Warning, &format!("Write error saving DB on disk: {}", err));
         false
     };
-
-    // Wait for I/O threads to terminate, just in case this is a
-    // foreground-saving, to avoid seeking the swap file descriptor at the
-    // same time.
-    // TODO: vm related
-
     
     let mut _writer: Option<File> = None;
     match OpenOptions::new().create(true).write(true).open(&tmp_file) {
@@ -401,24 +392,18 @@ pub fn rdb_save(filename: &str) -> bool {
                     None => {},
                 }
 
-                // Save the key and associated value. This requires special
-                // handling if the value is swapped out.
-                if !server_read().vm_enabled {
-                    // Save type, key, value
-                    match rdb_save_type(&mut buf_writer, entry.1.read().unwrap().type_code()) {
-                        Ok(_) => {},
-                        Err(e) => { return w_err(&e.to_string()); },
-                    }
-                    match rdb_save_raw_string(&mut buf_writer, entry.0) {
-                        Ok(_) => {},
-                        Err(e) => { return w_err(&e.to_string()); },
-                    }
-                    match rdb_save_object(&mut buf_writer, entry.1.clone()) {
-                        Ok(_) => {},
-                        Err(e) => { return w_err(&e.to_string()); },
-                    }
-                } else {
-                    // TODO: vm related
+                // Save type, key, value
+                match rdb_save_type(&mut buf_writer, entry.1.read().unwrap().type_code()) {
+                    Ok(_) => {},
+                    Err(e) => { return w_err(&e.to_string()); },
+                }
+                match rdb_save_raw_string(&mut buf_writer, entry.0) {
+                    Ok(_) => {},
+                    Err(e) => { return w_err(&e.to_string()); },
+                }
+                match rdb_save_object(&mut buf_writer, entry.1.clone()) {
+                    Ok(_) => {},
+                    Err(e) => { return w_err(&e.to_string()); },
                 }
             }
         }
@@ -456,14 +441,10 @@ pub fn rdb_save_background(filename: &str) -> bool {
         return false;
     }
 
-    // TODO: vm related
-
     unsafe {
         let child_pid: pid_t = fork();
         if child_pid == 0 {
             // child
-            // TODO: vm related
-
             close(server_read().fd);
             if rdb_save(filename) {
                 exit(0);

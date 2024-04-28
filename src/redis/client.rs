@@ -403,9 +403,6 @@ impl RedisClient {
                 Arc::new(send_reply_to_client)).is_err() {
             return;
         }
-
-        // TODO: vm related
-
         reply_w.push_back(Arc::new(obj.read().unwrap().get_decoded()));
     }
     pub fn add_reply_bulk_str(&self, s: &str) {
@@ -476,7 +473,6 @@ impl RedisClient {
         let db_r = db.read().unwrap();
         match db_r.dict.get(key) {
             Some(v) => {
-                // TODO: vm related
                 Some(v.clone())
             },
             None => {

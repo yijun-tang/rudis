@@ -494,12 +494,6 @@ fn set_generic_command(c: &mut RedisClient, nx: bool) {
         if nx {
             c.add_reply(C_ZERO.clone());
             return;
-        } else {
-            // If the key is about a swapped value, we want a new key object
-            // to overwrite the old. So we delete the old key in the database.
-            // This will also make sure that swap pages about the old object
-            // will be marked as free.
-            // TODO: vm related   
         }
     }
     c.insert(c.argv[1].read().unwrap().as_key(), c.argv[2].clone());
@@ -1850,8 +1844,6 @@ fn shutdown_command(c: &mut RedisClient) {
                 return;
             },
         }
-
-        // TODO: vm related
         exit(0);
     } else {
         // Snapshotting. Perform a SYNC SAVE and exit
@@ -1869,7 +1861,6 @@ fn shutdown_command(c: &mut RedisClient) {
 
             log(LogLevel::Warning, &format!("{} bytes used at exit", MemCounter::used_memory()));
             log(LogLevel::Warning, "Server exit now, bye bye...");
-            // TODO: vm related
             exit(0);
         } else {
             // Ooops.. error saving! The best we can do is to continue

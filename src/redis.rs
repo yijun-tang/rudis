@@ -1,17 +1,15 @@
 use std::{any::Any, collections::{HashMap, LinkedList}, fs::OpenOptions, io::Write, process::{exit, id}, ptr::null_mut, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
-use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, off_t, open, pid_t, setsid, signal, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
+use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, open, pid_t, setsid, signal, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use once_cell::sync::Lazy;
 use crate::{ae::{create_file_event, create_time_event, el::Mask, handler::{accept_handler, server_cron}}, anet::tcp_server, util::{log, oom, timestamp, LogLevel}};
-use self::{client::RedisClient, db::RedisDB, signal::setup_sig_segv_action};
+use self::{client::RedisClient, obj::RedisObject, signal::setup_sig_segv_action};
 
 pub mod config;
 pub mod client;
 pub mod cmd;
 pub mod obj;
 pub mod skiplist;
-pub mod db;
 pub mod signal;
-pub mod vm;
 pub mod aof;
 pub mod rdb;
 
@@ -93,32 +91,13 @@ pub struct RedisServer {
     max_clients: u32,
     max_memory: u128,
     blpop_blocked_clients: u32,
-    vm_blocked_clients: u32,
-    // Virtual memory configuration
-    vm_enabled: bool,
-    vm_swap_file: String,
-    vm_page_size: off_t,
-    vm_pages: off_t,
-    vm_max_memory: u128,
-    
-    
     // Hashes config
     hash_max_zipmap_entries: usize,
     hash_max_zipmap_value: usize,
 
     // Virtual memory state
     unix_time: u64,                                 // Unix time sampled every second
-
-    vm_max_threads: i32,                            // Max number of I/O threads running at the same time
-
     devnull: Option<Arc<dyn Write + Sync + Send>>,
-
-    // Virtual memory I/O threads stuff
-    // An I/O thread process an element taken from the io_jobs queue and
-    // put the result of the operation in the io_done list. While the
-    // job is being processed, it's put on io_processing queue.
-
-    io_ready_clients: LinkedList<Arc<RwLock<RedisClient>>>,     // Clients ready to be unblocked. All keys loaded
 }
 impl RedisServer {
     pub fn new() -> RedisServer {
@@ -168,13 +147,6 @@ impl RedisServer {
             max_clients: 0,
             blpop_blocked_clients: 0,
             max_memory: 0,
-            vm_enabled: false,
-            vm_swap_file: "/tmp/redis-%p.vm".to_string(),
-            vm_page_size: 256,                  // 256 bytes per page
-            vm_pages: 1024 * 1024 * 100,        // 104 millions of pages
-            vm_max_memory: 1024 * 1024 * 1024,  // 1 GB of RAM
-            vm_max_threads: 4,
-            vm_blocked_clients: 0,
             hash_max_zipmap_entries: HASH_MAX_ZIPMAP_ENTRIES,
             hash_max_zipmap_value: HASH_MAX_ZIPMAP_VALUE,
             unix_time: timestamp().as_secs(),
@@ -187,8 +159,6 @@ impl RedisServer {
             master: None,
             repl_state: ReplState::None,
             devnull: None,
-            
-            io_ready_clients: LinkedList::new(),
         }
     }
 
@@ -217,7 +187,7 @@ impl RedisServer {
         }
 
         for i in 0..self.dbnum {
-            self.dbs.push(Arc::new(RwLock::new(RedisDB::new(self.vm_enabled, i))));
+            self.dbs.push(Arc::new(RwLock::new(RedisDB::new(i))));
         }
 
         create_time_event(1, Arc::new(server_cron), None, None);
@@ -235,8 +205,6 @@ impl RedisServer {
                 },
             }
         } */
-
-        // if self.vm_enabled { self.init_vm(); }
     }
 
     pub fn daemonize(&self) {
@@ -315,9 +283,6 @@ impl RedisServer {
     pub fn verbosity(&self) -> &LogLevel {
         &self.verbosity
     }
-    pub fn vm_enabled(&self) -> bool {
-        self.vm_enabled
-    }
     pub fn cron_loops(&self) -> i32 {
         self.cron_loops
     }
@@ -338,9 +303,6 @@ impl RedisServer {
     }
     pub fn bg_rewrite_child_pid(&self) -> i32 {
         self.bg_rewrite_child_pid
-    }
-    pub fn io_ready_clients(&self) -> &LinkedList<Arc<RwLock<RedisClient>>> {
-        &self.io_ready_clients
     }
     pub fn max_clients(&self) -> u32 {
         self.max_clients
@@ -407,6 +369,19 @@ impl RedisServer {
                 -1
             },
         }
+    }
+}
+
+
+pub struct RedisDB {
+    pub dict: HashMap<String, Arc<RwLock<RedisObject>>>,                                        // The keyspace for this DB
+    pub expires: HashMap<String, u64>,                                                  // Timeout of keys with a timeout set
+    pub blocking_keys: HashMap<String, Arc<LinkedList<Arc<RwLock<RedisClient>>>>>,      // Keys with clients waiting for data (BLPOP)
+    pub id: i32,
+}
+impl RedisDB {
+    pub fn new(id: i32) -> RedisDB {
+        Self { dict: HashMap::new(), expires: HashMap::new(), blocking_keys: HashMap::new(), id }
     }
 }
 

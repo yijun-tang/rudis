@@ -15,10 +15,6 @@ static MAX_WRITE_PER_EVENT: usize = 1024 * 64;
 /// main loop of the event driven library, that is, before to sleep
 /// for ready file descriptors.
 pub fn before_sleep() {
-    if server_read().vm_enabled() && server_read().io_ready_clients().len() > 0 {
-        // TODO: vm related
-    }
-
     // Remove deleted clients
     if deleled_clients_read().len() > 0 {
         {
