@@ -1,16 +1,11 @@
-use crate::eventloop::Mask;
-
-
-
-/// 
-/// I/O Multiplexing of Event Loop.
-/// 
+//! I/O Multiplexing of Event Loop.
+//! 
 
 #[cfg(target_os = "linux")]
 pub mod io_event {
     use std::mem::zeroed;
     use libc::{close, epoll_create, epoll_ctl, epoll_event, epoll_wait, strerror, EPOLLIN, EPOLLOUT, EPOLL_CTL_ADD, EPOLL_CTL_DEL, EPOLL_CTL_MOD};
-    use crate::{ae::{el::fired_write, Mask, SET_SIZE}, util::{error, log, LogLevel}};
+    use crate::{eventloop::{fired_write, Mask, SET_SIZE}, util::error};
 
     pub struct ApiState {
         epfd: i32,
@@ -147,48 +142,6 @@ pub mod io_event {
             if _ret_no == -1 {
                 eprintln!("ApiState.drop failed: {}", _err);
             }
-        }
-    }
-}
-
-
-/// Wait for millseconds until the given file descriptor becomes
-/// writable/readable/exception
-pub fn wait(fd: i32, mask: Mask, milliseconds: u128) -> Result<Mask, i32> {
-    use std::mem::zeroed;
-    use libc::{fd_set, select, timeval, FD_ISSET, FD_SET, FD_ZERO};
-
-    let mut timeout = timeval { tv_sec: (milliseconds / 1000) as i64, tv_usec: ((milliseconds % 1000) * 1000) as i32 };
-    let mut ret_mask = Mask::None;
-    let mut _ret_val = 0;
-    let mut rfds: fd_set;
-    let mut wfds: fd_set;
-    let mut efds: fd_set;
-
-    unsafe {
-        rfds = zeroed();
-        wfds = zeroed();
-        efds = zeroed();
-        FD_ZERO(&mut rfds);
-        FD_ZERO(&mut wfds);
-        FD_ZERO(&mut efds);
-        if mask.is_readable() {
-            FD_SET(fd, &mut rfds);
-        }
-        if mask.is_writable() {
-            FD_SET(fd, &mut wfds);
-        }
-        _ret_val = select(fd + 1, &mut rfds, &mut wfds, &mut efds, &mut timeout);
-        if _ret_val > 0 {
-            if FD_ISSET(fd, &mut rfds) {
-                ret_mask = ret_mask | Mask::Readable;
-            }
-            if FD_ISSET(fd, &mut wfds) {
-                ret_mask = ret_mask | Mask::Writable;
-            }
-            Ok(ret_mask)
-        } else {
-            Err(_ret_val)
         }
     }
 }
