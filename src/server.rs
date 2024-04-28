@@ -1,7 +1,7 @@
 use std::{any::Any, collections::{HashMap, LinkedList}, env::set_current_dir, fs::{File, OpenOptions}, io::{self, BufRead, BufReader, Read, Write}, process::{exit, id}, ptr::null_mut, sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard}};
 use libc::{close, dup2, fclose, fopen, fork, fprintf, getpid, open, pid_t, setsid, signal, FILE, O_RDWR, SIGHUP, SIGPIPE, SIG_IGN, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use once_cell::sync::Lazy;
-use crate::{client::RedisClient, eventloop::{create_file_event, create_time_event, Mask}, handler::{accept_handler, server_cron}, net::tcp_server, obj::RedisObject, signal::setup_sig_segv_action, util::{log, oom, timestamp, yes_no_to_bool, LogLevel}};
+use crate::{client::RedisClient, eventloop::{create_file_event, create_time_event, Mask}, handler::{accept_handler, server_cron}, net::tcp_server, obj::RedisObject, util::{log, oom, timestamp, yes_no_to_bool, LogLevel}};
 
 
 /// 
@@ -157,7 +157,6 @@ impl RedisServer {
             // ignore handler
             signal(SIGHUP, SIG_IGN);
             signal(SIGPIPE, SIG_IGN);
-            setup_sig_segv_action();
         }
 
         match OpenOptions::new().write(true).open("/dev/null") {

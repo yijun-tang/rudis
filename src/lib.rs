@@ -14,4 +14,3 @@ pub mod list;
 pub mod skiplist;
 pub mod zmalloc;
 pub mod util;
-pub mod signal;
