@@ -1,6 +1,6 @@
 use std::{fs::{remove_file, rename, File, OpenOptions}, io::{BufRead, BufReader, BufWriter, Error, ErrorKind, Read, Write}, process::{exit, id}, sync::{Arc, RwLock}};
 use libc::{close, fork, strerror};
-use crate::{redis::{server_read, server_write, RedisClient}, util::{error, log, timestamp, LogLevel}, zmalloc::MemCounter};
+use crate::{client::RedisClient, server::{server_read, server_write}, util::{error, log, timestamp, LogLevel}, zmalloc::MemCounter};
 use super::{cmd::lookup_command, obj::{try_object_encoding, try_object_sharing, RedisObject, StringStorageType}};
 
 /// Replay the append log file. On error REDIS_OK is returned. On non fatal

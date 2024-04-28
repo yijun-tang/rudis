@@ -1,4 +1,5 @@
-use super::el::Mask;
+use crate::eventloop::Mask;
+
 
 
 /// 
@@ -197,7 +198,7 @@ pub fn wait(fd: i32, mask: Mask, milliseconds: u128) -> Result<Mask, i32> {
 pub mod io_event {
     use std::ptr::{null, null_mut};
     use libc::{close, kevent, kqueue, strerror, timespec, EVFILT_READ, EVFILT_WRITE, EV_ADD, EV_DELETE};
-    use crate::{ae::{el::{fired_write, Mask}, SET_SIZE}, util::error};
+    use crate::{eventloop::{fired_write, Mask, SET_SIZE}, util::error};
 
     pub struct ApiState {
         kqfd: i32,

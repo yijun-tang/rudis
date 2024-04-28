@@ -1,7 +1,5 @@
 use rredis::{
-    ae::{ae_main, el::set_before_sleep_proc, handler::before_sleep},
-    redis::{aof::load_append_only_file, print_logo, rdb::rdb_load, server_read, server_write},
-    util::{log, LogLevel},
+    aof::load_append_only_file, eventloop::{ae_main, set_before_sleep_proc}, handler::before_sleep, rdb::rdb_load, server::{print_logo, server_read, server_write}, util::{log, LogLevel}
 };
 use std::{env, process::exit, sync::Arc, time::Instant};
 
