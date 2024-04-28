@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet, LinkedList}, fs::{remove_file, rename, File, OpenOptions}, io::{BufReader, BufWriter, Error, ErrorKind, Read, Write}, process::{exit, id}, str::from_utf8, sync::{Arc, RwLock}};
+use std::{collections::{HashMap, HashSet, LinkedList}, fs::{metadata, remove_file, rename, File, OpenOptions}, io::{BufReader, BufWriter, Error, ErrorKind, Read, Write}, process::{exit, id}, str::from_utf8, sync::{Arc, RwLock}};
 use libc::{close, fork, pid_t, strerror};
 use lzf::{compress, decompress};
 use crate::{server::{server_read, server_write, RedisDB}, util::{error, log, timestamp, LogLevel}};
@@ -36,6 +36,18 @@ const REDIS_RDB_ENC_LZF: u8 = 3;       // string compressed with FASTLZ
 
 
 pub fn rdb_load(filename: &str) -> bool {
+    match metadata(&filename) {
+        Ok(meta) => {
+            if !meta.is_file() {
+                log(LogLevel::Warning, &format!("specified dump file isn't a file: {}", &filename));
+                return false;
+            }
+        },
+        Err(e) => {
+            log(LogLevel::Warning, &format!("dump file isn't existed: {}", e));
+            return false;
+        },
+    }
     let mut _file: Option<File> = None;
     match OpenOptions::new().read(true).open(filename) {
         Ok(f) => { _file = Some(f); },

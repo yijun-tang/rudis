@@ -1,4 +1,4 @@
-use std::{fs::{remove_file, rename, File, OpenOptions}, io::{BufRead, BufReader, BufWriter, Error, ErrorKind, Read, Write}, process::{exit, id}, sync::{Arc, RwLock}};
+use std::{fs::{metadata, remove_file, rename, File, OpenOptions}, io::{BufRead, BufReader, BufWriter, Error, ErrorKind, Read, Write}, process::{exit, id}, sync::{Arc, RwLock}};
 use libc::{close, fork, strerror};
 use crate::{client::RedisClient, server::{server_read, server_write}, util::{error, log, timestamp, LogLevel}};
 use super::{cmd::lookup_command, obj::{try_object_encoding, try_object_sharing, RedisObject, StringStorageType}};
@@ -7,6 +7,21 @@ use super::{cmd::lookup_command, obj::{try_object_encoding, try_object_sharing, 
 /// error (the append only file is zero-length) REDIS_ERR is returned. On
 /// fatal error an error message is logged and the program exists.
 pub fn load_append_only_file(filename: &str) -> Result<(), String> {
+    match metadata(&filename) {
+        Ok(meta) => {
+            if !meta.is_file() {
+                let err = format!("specified dump file isn't a file: {}", &filename);
+                log(LogLevel::Warning, &err);
+                return Err(err);
+            }
+        },
+        Err(e) => {
+            let err = format!("dump file isn't existed: {}", e);
+            log(LogLevel::Warning, &err);
+            return Err(err);
+        },
+    }
+    
     let mut _reader: Option<Box<dyn Read>> = None;
     match OpenOptions::new().read(true).open(filename) {
         Ok(f) => {
