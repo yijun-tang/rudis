@@ -1,4 +1,4 @@
-# rredis
+# Rudis
 Redis Re-implemention in Rust for Self-taught Purpose. In order to make it easy, I will reference the very early version Redis [v1.3.7](https://github.com/redis/redis/releases/tag/v1.3.7).
 
 The Statistics of LOC for v1.3.7:
