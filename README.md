@@ -1,5 +1,15 @@
-# Rudis
-Redis Re-implemention in Rust for Self-taught Purpose. In order to make it easy, I will reference the very early version Redis [v1.3.7](https://github.com/redis/redis/releases/tag/v1.3.7).
+# rudis
+Redis Re-implemention in Rust for Learning Purpose. In order to make it easy, I will reference the very early version Redis [v1.3.7](https://github.com/redis/redis/releases/tag/v1.3.7).
+
+Since the self-taught purpose of this project, I will ignore some trivial functions (such as virtual memory, cause it's already nonexistent in later redis versions). At the same time, I won't rebuild dynamic strings by myself which is replaced by collections structs in std module of Rust. Most of the commands listed at docs of v1.3.7 are implemented.
+
+Supported types
+* string
+* list
+* set
+* zset
+
+_Note: the hash type is ignored, since the underlying collections type are both HashMap._
 
 The Statistics of LOC for v1.3.7:
 
