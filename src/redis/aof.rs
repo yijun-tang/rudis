@@ -1,6 +1,6 @@
 use std::{fs::{remove_file, rename, File, OpenOptions}, io::{BufRead, BufReader, BufWriter, Error, ErrorKind, Read, Write}, process::{exit, id}, sync::{Arc, RwLock}};
 use libc::{close, fork, strerror};
-use crate::{redis::{server_read, server_write, RedisClient}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
+use crate::{redis::{server_read, server_write, RedisClient}, util::{error, log, timestamp, LogLevel}, zmalloc::Counter};
 use super::{cmd::lookup_command, obj::{try_object_encoding, try_object_sharing, RedisObject, StringStorageType}};
 
 /// Replay the append log file. On error REDIS_OK is returned. On non fatal
@@ -114,7 +114,7 @@ pub fn load_append_only_file(filename: &str) -> Result<(), String> {
                     // Handle swapping while loading big datasets when VM is on
                     loaded_keys += 1;
                     if server_read().vm_enabled && (loaded_keys % 5000) == 0 {
-                        while used_memory() as u128 > server_read().vm_max_memory {
+                        while Counter::used_memory() as u128 > server_read().vm_max_memory {
                             if server_read().swap_one_object_blocking().is_err() {
                                 break;
                             }

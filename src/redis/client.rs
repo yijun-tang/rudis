@@ -2,7 +2,7 @@ use std::{collections::{HashSet, LinkedList}, sync::{Arc, RwLock, RwLockReadGuar
 use libc::close;
 use once_cell::sync::Lazy;
 use rand::Rng;
-use crate::{ae::{create_file_event, delete_file_event, el::Mask, handler::{read_query_from_client, send_reply_to_client}}, anet::{nonblock, tcp_no_delay}, redis::{cmd::lookup_command, server_read, server_write}, util::{log, timestamp, LogLevel}, zmalloc::used_memory};
+use crate::{ae::{create_file_event, delete_file_event, el::Mask, handler::{read_query_from_client, send_reply_to_client}}, anet::{nonblock, tcp_no_delay}, redis::{cmd::lookup_command, server_read, server_write}, util::{log, timestamp, LogLevel}, zmalloc::Counter};
 use super::{cmd::{call, MultiCmd, MAX_SIZE_INLINE_CMD}, obj::{RedisObject, StringStorageType, CRLF}, RedisDB, ReplState, ONE_GB};
 
 
@@ -323,7 +323,7 @@ impl RedisClient {
                     return true;
                 } else if server_read().max_memory > 0 && 
                     cmd.flags().is_deny_oom() &&
-                    used_memory() > server_read().max_memory {
+                    Counter::used_memory() as u128 > server_read().max_memory {
                     self.add_reply_str("-ERR command not allowed when used memory > 'maxmemory'\r\n");
                     self.reset();
                     return true;

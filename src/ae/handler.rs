@@ -1,6 +1,6 @@
 use std::{any::Any, borrow::Borrow, collections::LinkedList, net::Ipv4Addr, sync::{Arc, RwLock}};
 use libc::{c_void, close, read, strerror, write, EAGAIN};
-use crate::{anet::accept, redis::{client::{clients_read, clients_write, deleled_clients_read, deleted_clients_write, RedisClient}, obj::{RedisObject, StringStorageType}, rdb::rdb_save_background, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::used_memory};
+use crate::{anet::accept, redis::{client::{clients_read, clients_write, deleled_clients_read, deleted_clients_write, RedisClient}, obj::{RedisObject, StringStorageType}, rdb::rdb_save_background, server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::Counter};
 use super::{delete_file_event, Mask};
 
 static MAX_WRITE_PER_EVENT: usize = 1024 * 64;
@@ -75,7 +75,7 @@ pub fn server_cron(id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) ->
         log(LogLevel::Verbose, &format!("{} clients connected ({} slaves), {} bytes in use, {} shared objects", 
             clients_read().len() - server.slaves().len(), 
             server.slaves().len(),
-            used_memory(),
+            Counter::used_memory(),
             server.sharing_pool().len()));
     }
 
