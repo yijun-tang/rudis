@@ -34,7 +34,7 @@ pub struct RedisServer {
     port: u16,
     pub fd: i32,
     pub dbs: Vec<Arc<RwLock<RedisDB>>>,
-    sharing_pool: HashMap<String, String>,      // Pool used for object sharing
+    sharing_pool: HashMap<Arc<RedisObject>, usize>,      // Pool used for object sharing
     sharing_pool_size: u32,
     pub dirty: u128,                                // changes to DB from the last save
     slaves: LinkedList<Arc<RwLock<RedisClient>>>,
@@ -85,7 +85,6 @@ pub struct RedisServer {
     hash_max_zipmap_value: usize,
 
     // Virtual memory state
-    unix_time: u64,                                 // Unix time sampled every second
     devnull: Option<Arc<dyn Write + Sync + Send>>,
 }
 impl RedisServer {
@@ -137,7 +136,6 @@ impl RedisServer {
             max_memory: 0,
             hash_max_zipmap_entries: HASH_MAX_ZIPMAP_ENTRIES,
             hash_max_zipmap_value: HASH_MAX_ZIPMAP_VALUE,
-            unix_time: timestamp().as_secs(),
 
             // Replication related
             is_slave: false,
@@ -504,9 +502,6 @@ impl RedisServer {
     pub fn set_cron_loops(&mut self, c: i32) {
         self.cron_loops = c;
     }
-    pub fn set_unix_time(&mut self, t: u64) {
-        self.unix_time = t;
-    }
     pub fn dbnum(&self) -> i32 {
         self.dbnum
     }
@@ -531,7 +526,7 @@ impl RedisServer {
     pub fn slaves(&self) -> &LinkedList<Arc<RwLock<RedisClient>>> {
         &self.slaves
     }
-    pub fn sharing_pool(&self) -> &HashMap<String, String> {
+    pub fn sharing_pool(&self) -> &HashMap<Arc<RedisObject>, usize> {
         &self.sharing_pool
     }
     pub fn is_daemonize(&self) -> bool {

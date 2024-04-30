@@ -1,4 +1,4 @@
-#![feature(ip_bits, linked_list_remove)]
+#![feature(ip_bits)]
 
 pub mod eventloop;
 pub mod ioevent;

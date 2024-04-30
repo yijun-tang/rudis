@@ -35,12 +35,6 @@ pub fn server_cron(id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) ->
     let loops = server_read().cron_loops();
     server_write().set_cron_loops(loops + 1);
 
-    // We take a cached value of the unix time in the global state because
-    // with virtual memory and aging there is to store the current time
-    // in objects at every object access, and accuracy is not needed.
-    // To access a global var is faster than calling time(NULL)
-    server_write().set_unix_time(timestamp().as_secs());
-
     // Show some info about non-empty databases
     {
         let server = server_read();
