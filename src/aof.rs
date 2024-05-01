@@ -1,6 +1,6 @@
 use std::{fs::{metadata, remove_file, rename, File, OpenOptions}, io::{BufRead, BufReader, BufWriter, Error, ErrorKind, Read, Write}, process::{exit, id}, sync::{Arc, RwLock}};
-use libc::{close, fork, strerror};
-use crate::{client::RedisClient, server::{server_read, server_write}, util::{error, log, timestamp, LogLevel}};
+use libc::{close, fork, pid_t, strerror};
+use crate::{client::RedisClient, cmd::RedisCommand, server::{server_read, server_write, AppendFsync}, util::{error, log, timestamp, LogLevel}};
 use super::{cmd::lookup_command, obj::{try_object_encoding, try_object_sharing, RedisObject, StringStorageType}};
 
 /// Replay the append log file. On error REDIS_OK is returned. On non fatal
@@ -387,6 +387,88 @@ fn write_bulk_raw_string(buf_w: &mut BufWriter<File>, str: &str) -> Result<(), E
     buf_w.write(format!("${}\r\n", str.len()).as_bytes())?;
     buf_w.write(format!("{}\r\n", str).as_bytes())?;
     Ok(())
+}
+
+pub fn feed_append_only_file(cmd: Arc<RedisCommand>, db_id: i32, argv: &Vec<Arc<RwLock<RedisObject>>>) {
+    let mut buf = String::new();
+    // The DB this command was targetting is not the same as the last command
+    // we appendend. To issue a SELECT command is needed.
+    if db_id != server_read().append_sel_db {
+        let sel_db = db_id.to_string();
+        buf.push_str(&format!("*2\r\n$6\r\nSELECT\r\n${}\r\n{}\r\n", sel_db.len(), sel_db));
+        server_write().append_sel_db = db_id;
+    }
+
+    // "Fix" the argv vector if the command is EXPIRE. We want to translate
+    // EXPIREs into EXPIREATs calls
+    let mut mapped_argv = argv.clone();
+    if Arc::ptr_eq(&cmd.proc(), &lookup_command("expire").unwrap().proc()) {
+        let mut when = 0u64;
+        mapped_argv[0] = Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String("EXPIREAT".to_string()) }));
+        match mapped_argv[1].read().unwrap().get_decoded().string().unwrap().string().unwrap().parse() {
+            Ok(t) => { when = t; },
+            Err(e) => {
+                log(LogLevel::Warning, &format!("failed to parse expired time: {}", e));
+            },
+        }
+        when += timestamp().as_secs();
+        mapped_argv[2] = Arc::new(RwLock::new(RedisObject::String { ptr: StringStorageType::String(when.to_string()) }));
+    }
+
+    // Append the actual command
+    buf.push_str(&format!("*{}\r\n", argv.len()));
+    for arg in mapped_argv {
+        let decoded_arg = arg.read().unwrap().get_decoded();
+        let arg_str = decoded_arg.string().unwrap().string().unwrap();
+        buf.push_str(&format!("${}\r\n{}\r\n", arg_str.len(), arg_str));
+    }
+
+    // We want to perform a single write. This should be guaranteed atomic
+    // at least if the filesystem we are writing is a real physical one.
+    // While this will save us against the server being killed I don't think
+    // there is much to do about the whole server stopping for power problems
+    // or alike
+    
+    match server_write().append_file.as_ref().unwrap().write_all(buf.as_bytes()) {
+        Ok(_) => {},
+        Err(e) => {
+            // Ooops, we are in troubles. The best thing to do for now is
+            // to simply exit instead to give the illusion that everything is
+            // working as expected.
+            log(LogLevel::Warning, &format!("Exiting on error writing to the append-only file: {}", e));
+            exit(1);
+        },
+    }
+
+    // If a background append only file rewriting is in progress we want to
+    // accumulate the differences between the child DB and the current one
+    // in a buffer, so that when the child process will do its work we
+    // can append the differences to the new append only file.
+    if server_read().bg_rewrite_child_pid != -1 {
+        server_write().bg_rewrite_buf.push_str(&buf);
+    }
+
+    let now = timestamp().as_secs();
+    if server_read().append_fsync == AppendFsync::Always ||
+        (server_read().append_fsync == AppendFsync::EverySec && now - server_read().last_fsync > 1) {
+        match server_read().append_file.as_ref().unwrap().sync_all() {
+            Ok(_) => {},
+            Err(e) => {
+                log(LogLevel::Warning, &format!("failed to sync file to disk: {}", e));
+                return;
+            },
+        }
+        server_write().last_fsync = now;
+    }
+}
+
+pub fn aof_remove_temp_file(child_pid: pid_t) {
+    match remove_file(&format!("temp-rewriteaof-bg-{}.aof", child_pid)) {
+        Ok(_) => {},
+        Err(e) => {
+            log(LogLevel::Warning, &format!("failed to delete aof rewrite file: {}", e));
+        },
+    };
 }
 
 #[cfg(test)]

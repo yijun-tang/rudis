@@ -1,6 +1,6 @@
-use std::{any::Any, borrow::Borrow, collections::LinkedList, net::Ipv4Addr, sync::{Arc, RwLock}};
-use libc::{c_void, close, read, strerror, write, EAGAIN};
-use crate::{client::{clients_read, clients_write, deleled_clients_read, deleted_clients_write, RedisClient}, eventloop::{delete_file_event, Mask}, net::accept, obj::{RedisObject, StringStorageType}, rdb::rdb_save_background, server::{server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::MemCounter};
+use std::{any::Any, borrow::Borrow, collections::LinkedList, fs::{rename, File, OpenOptions}, io::{BufWriter, Write}, net::Ipv4Addr, ptr::null_mut, sync::{Arc, RwLock}};
+use libc::{c_void, close, pid_t, read, strerror, wait4, write, EAGAIN, WEXITSTATUS, WIFSIGNALED, WNOHANG};
+use crate::{aof::aof_remove_temp_file, client::{clients_read, clients_write, deleled_clients_read, deleted_clients_write, RedisClient}, eventloop::{delete_file_event, Mask}, net::accept, obj::{RedisObject, StringStorageType}, rdb::{rdb_remove_temp_file, rdb_save_background}, server::{server_read, server_write, IO_BUF_LEN}, util::{error, log, timestamp, LogLevel}, zmalloc::MemCounter};
 
 static MAX_WRITE_PER_EVENT: usize = 1024 * 64;
 
@@ -72,7 +72,18 @@ pub fn server_cron(id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) ->
 
     // Check if a background saving or AOF rewrite in progress terminated
     if server_read().bg_save_child_pid() != -1 || server_read().bg_rewrite_child_pid() != -1 {
-
+        let mut status = 0;
+        let mut pid: pid_t = 0;
+        unsafe {
+            pid = wait4(-1, &mut status, WNOHANG, null_mut());
+        }
+        if pid != 0 {
+            if pid == server_read().bg_save_child_pid() {
+                background_save_done_handler(status);
+            } else {
+                background_rewrite_done_handler(status);
+            }
+        }
     } else {
         // If there is not a background saving in progress check if
         // we have to save now
@@ -95,12 +106,103 @@ pub fn server_cron(id: u128, client_data: Option<Arc<dyn Any + Sync + Send>>) ->
     // it will get more aggressive to avoid that too much memory is used by
     // keys that can be removed from the keyspace.
 
-    // Swap a few keys on disk if we are over the memory limit and VM
-    // is enbled. Try to free objects from the free list first.
-
     // Check if we should connect to a MASTER
 
     1000
+}
+
+/// A background saving child (BGSAVE) terminated its work. Handle this.
+fn background_save_done_handler(status: i32) {
+    let exit_code = WEXITSTATUS(status);
+    let by_signal = WIFSIGNALED(status);
+
+    if !by_signal && exit_code == 0 {
+        log(LogLevel::Notice, "Background saving terminated with success");
+        server_write().dirty = 0;
+        server_write().last_save = timestamp().as_secs();
+    } else if !by_signal && exit_code != 0 {
+        log(LogLevel::Warning, "Background saving error");
+    } else {
+        log(LogLevel::Warning, "Background saving terminated by signal");
+        rdb_remove_temp_file(server_read().bg_save_child_pid());
+    }
+    server_write().bg_save_child_pid = -1;
+    // Possibly there are slaves waiting for a BGSAVE in order to be served
+    // (the first stage of SYNC is a bulk transfer of dump.rdb)
+    // TODO:
+}
+
+/// A background append only file rewriting (BGREWRITEAOF) terminated its work.
+/// Handle this.
+fn background_rewrite_done_handler(status: i32) {
+    let exit_code = WEXITSTATUS(status);
+    let by_signal = WIFSIGNALED(status);
+
+    let cleanup = || {
+        server_write().bg_rewrite_buf.clear();
+        aof_remove_temp_file(server_read().bg_rewrite_child_pid);
+        server_write().bg_rewrite_child_pid = -1;
+    };
+
+    if !by_signal && exit_code == 0 {
+        log(LogLevel::Notice, "Background append only file rewriting terminated with success");
+        // Now it's time to flush the differences accumulated by the parent
+        let tmp_file = format!("temp-rewriteaof-bg-{}.aof", server_read().bg_rewrite_child_pid);
+        let file: File;
+        match OpenOptions::new().write(true).append(true).open(&tmp_file) {
+            Ok(f) => { file = f; },
+            Err(e) => {
+                log(LogLevel::Warning, &format!("Not able to open the temp append only file produced by the child: {}", e));
+                cleanup();
+                return;
+            },
+        }
+        let mut buf_writer = BufWriter::new(file);
+        match buf_writer.write_all(server_read().bg_rewrite_buf.as_bytes()) {
+            Ok(_) => {},
+            Err(e) => {
+                log(LogLevel::Warning, &format!("Error or short write trying to flush the parent diff of the append log file in the child temp file: {}", e));
+                cleanup();
+                return;
+            },
+        }
+        log(LogLevel::Notice, &format!("Parent diff flushed into the new append log file with success ({} bytes)", server_read().bg_rewrite_buf.len()));
+        // Now our work is to rename the temp file into the stable file. And
+        // switch the file descriptor used by the server for append only.
+        match rename(&tmp_file, &server_read().append_filename) {
+            Ok(_) => {},
+            Err(e) => {
+                log(LogLevel::Warning, &format!("Can't rename the temp append only file into the stable one: {}", e));
+                cleanup();
+                return;
+            },
+        }
+        log(LogLevel::Notice, "Append only file successfully rewritten.");
+        
+        if let Some(_) = server_write().append_file.take() {
+            match OpenOptions::new().write(true).append(true).open(&server_read().append_filename) {
+                Ok(f) => {
+                    match f.sync_all() {
+                        Ok(_) => {},
+                        Err(e) => {
+                            log(LogLevel::Warning, &format!("failed to sync new append only file to disk: {}", e));
+                        },
+                    }
+                    server_write().append_file = Some(f);
+                    server_write().append_sel_db = -1;  // Make sure it will issue SELECT
+                    log(LogLevel::Notice, "The new append only file was selected for future appends.");
+                },
+                Err(e) => {
+                    log(LogLevel::Warning, &format!("Not able to open the renamed append only file: {}", e));
+                },
+            }
+        }
+    } else if !by_signal && exit_code != 0 {
+        log(LogLevel::Warning, "Background append only file rewriting error");
+    } else {
+        log(LogLevel::Warning, "Background append only file rewriting terminated by signal");
+    }
+    cleanup();
 }
 
 

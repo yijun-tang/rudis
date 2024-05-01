@@ -52,15 +52,14 @@ pub struct RedisServer {
     pub dbnum: i32,
     pub daemonize: bool,
     pub append_only: bool,
-    append_fsync: AppendFsync,
-    append_writer: Option<Arc<dyn Write + Sync + Send>>,
-    last_fsync: u64,
-    append_fd: i32,
+    pub append_fsync: AppendFsync,
+    pub append_file: Option<File>,
+    pub last_fsync: u64,
     pub append_sel_db: i32,
     pub pid_file: String,
     pub bg_save_child_pid: pid_t,
     pub bg_rewrite_child_pid: pid_t,
-    bg_rewrite_buf: String,                     // buffer taken by parent during oppend only rewrite
+    pub bg_rewrite_buf: String,                     // buffer taken by parent during oppend only rewrite
     save_params: Vec<SaveParam>,
     log_file: String,
     bind_addr: String,
@@ -117,9 +116,8 @@ impl RedisServer {
             daemonize: false,
             append_only: false,
             append_fsync: AppendFsync::Always,
-            append_writer: None,
+            append_file: None,
             last_fsync: timestamp().as_secs(),
-            append_fd: -1,
             append_sel_db: -1,                  // Make sure the first time will not match
             pid_file: "/var/run/redis.pid".to_string(),
             bg_save_child_pid: -1,
@@ -181,15 +179,15 @@ impl RedisServer {
             Err(e) => { oom(&e); },    // TODO: is it appropriate to call oom?
         }
 
-        /* if self.append_only {
-            match OpenOptions::new().write(true).append(true).create(true).open(self.append_filename) {
-                Ok(f) => { self.append_writer = Some(Box::new(f)); },
+        if self.append_only {
+            match OpenOptions::new().write(true).append(true).create(true).open(&self.append_filename) {
+                Ok(f) => { self.append_file = Some(f); },
                 Err(e) => {
-                    self.log(LogLevel::Warning, &format!("Can't open the append-only file: {}", e));
+                    log(LogLevel::Warning, &format!("Can't open the append-only file: {}", e));
                     exit(1);
                 },
             }
-        } */
+        }
     }
 
     /// I agree, this is a very rudimental way to load a configuration...
@@ -627,7 +625,8 @@ impl SaveParam {
 }
 
 
-enum AppendFsync {
+#[derive(PartialEq)]
+pub enum AppendFsync {
     No,
     Always,
     EverySec,

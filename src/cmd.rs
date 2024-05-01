@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet, LinkedList}, fs::{remove_file, OpenOptions}, ops::{BitOr, Deref}, process::exit, sync::{Arc, RwLock}};
 use libc::{kill, SIGKILL};
 use once_cell::sync::Lazy;
-use crate::{obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, server::{server_read, server_write}, util::{log, string_pattern_match, timestamp, LogLevel}, zmalloc::MemCounter};
+use crate::{aof::feed_append_only_file, obj::{NULL_BULK, PONG, WRONG_TYPE_ERR}, server::{server_read, server_write}, util::{log, string_pattern_match, timestamp, LogLevel}, zmalloc::MemCounter};
 use super::{aof::rewrite_append_only_file_background, client::RedisClient, obj::{try_object_encoding, ListStorageType, RedisObject, SetStorageType, StringStorageType, ZSetStorageType, COLON, CRLF, C_ONE, C_ZERO, EMPTY_MULTI_BULK, ERR, NO_KEY_ERR, NULL_MULTI_BULK, OK, OUT_OF_RANGE_ERR, PLUS, SAME_OBJECT_ERR, SYNTAX_ERR}, rdb::{rdb_remove_temp_file, rdb_save, rdb_save_background}, skiplist::SkipList};
 
 
@@ -80,7 +80,7 @@ static CMD_TABLE: Lazy<HashMap<&str, Arc<RedisCommand>>> = Lazy::new(|| {
         ("zcard", Arc::new(RedisCommand { name: "zcard", proc: Arc::new(zcard_command), arity: 2, flags: CmdFlags::inline()})),
         ("zscore", Arc::new(RedisCommand { name: "zscore", proc: Arc::new(zscore_command), arity: 3, flags: CmdFlags::bulk() | CmdFlags::deny_oom()})),
         ("zremrangebyscore", Arc::new(RedisCommand { name: "zremrangebyscore", proc: Arc::new(zremrangebyscore_command), arity: 4, flags: CmdFlags::inline()})),
-        
+
         ("save", Arc::new(RedisCommand { name: "save", proc: Arc::new(save_command), arity: 1, flags: CmdFlags::inline()})),
         ("bgsave", Arc::new(RedisCommand { name: "bgsave", proc: Arc::new(bgsave_command), arity: 1, flags: CmdFlags::inline()})),
         ("lastsave", Arc::new(RedisCommand { name: "lastsave", proc: Arc::new(lastsave_command), arity: 1, flags: CmdFlags::inline()})),
@@ -100,11 +100,14 @@ pub fn lookup_command(name: &str) -> Option<Arc<RedisCommand>> {
 /// Call() is the core of Redis execution of a command
 /// 
 pub fn call(c: &mut RedisClient, cmd: Arc<RedisCommand>) {
+    let dirty = server_read().dirty;
+
     let f = &cmd.proc;
     f(c);
 
-    // log(LogLevel::Verbose, "call ing");
-    // TODO
+    if server_read().append_only && server_read().dirty != dirty {
+        feed_append_only_file(cmd.clone(), c.db.clone().unwrap().read().unwrap().id, &c.argv);
+    }
 
     server_write().stat_numcommands += 1;
 }
